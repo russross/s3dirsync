@@ -1,3 +1,9 @@
+//
+// Propolis
+// Amazon S3 transaction handlers
+// by Russ Ross <russ@russross.com>
+//
+
 package main
 
 import (
@@ -65,6 +71,16 @@ type Bucket struct {
 
 func (bucket *Bucket) PathToURL(pathname string) string {
 	url := bucket.Url + "/"
+	if bucket.UrlPrefix != "" {
+		url += bucket.UrlPrefix + "/"
+	}
+	url += pathname
+
+	return url
+}
+
+func (bucket *Bucket) PathToSrc(pathname string) string {
+	url := "/" + bucket.Bucket + "/"
 	if bucket.UrlPrefix != "" {
 		url += bucket.UrlPrefix + "/"
 	}
@@ -191,7 +207,6 @@ func (bucket *Bucket) GetResponseMetaData(resp *http.Response, info *os.FileInfo
 
 	// get the mtime/atime/ctime
 	// prefer X-Amz-Meta-Mtime header
-	// fall back to Last-Modified
 	found := false
 	var mtime int64
 	if line := resp.Header.Get("X-Amz-Meta-Mtime"); line != "" {
@@ -206,6 +221,7 @@ func (bucket *Bucket) GetResponseMetaData(resp *http.Response, info *os.FileInfo
 			}
 		}
 	}
+	// fall back to Last-Modified
 	if !found {
 		when, err := time.Parse(time.RFC1123, resp.Header.Get("Last-Modified"))
 		if err != nil {
@@ -244,9 +260,13 @@ func (bucket *Bucket) SendRequest(method string, src, path string, body io.ReadC
 	}
 
 	// set upload file info if applicable
-	if info != nil {
+	if info != nil && body != nil {
 		// TODO: 0-length files fail because the Content-Length field is missing
+		// a fix is in the works in the Go library
 		req.ContentLength = info.Size
+	}
+
+	if info != nil {
 		bucket.SetRequestMetaData(req, info)
 	}
 
@@ -257,12 +277,13 @@ func (bucket *Bucket) SendRequest(method string, src, path string, body io.ReadC
 
 	// is this a copy/metadata update?
 	if src != "" {
-		req.Header.Set("X-Amz-Copy-Source", urlEncode(bucket.PathToURL(src)))
+		req.Header.Set("X-Amz-Copy-Source", urlEncode(bucket.PathToSrc(src)))
 		req.Header.Set("X-Amz-Metadata-Directive", "REPLACE")
 	}
 
 	// sign and execute the request
-	if resp, err = bucket.SignAndExecute(req); err != nil {
+	// note: 2nd argument is temporary hack to set Content-Length: 0 when needed
+	if resp, err = bucket.SignAndExecute(req, method == "PUT" && body == nil || (info != nil && info.Size == 0)); err != nil {
 		return
 	}
 
@@ -301,8 +322,8 @@ func (bucket *Bucket) GetFile(path string) (body io.ReadCloser, hash string, inf
 			fp.Close()
 			return
 		}
-		encoded := new(bytes.Buffer)
-		encoder := base64.NewEncoder(base64.StdEncoding, encoded)
+		var encoded bytes.Buffer
+		encoder := base64.NewEncoder(base64.StdEncoding, &encoded)
 		encoder.Write(md5hash.Sum())
 		encoder.Close()
 		hash = encoded.String()
@@ -405,8 +426,12 @@ func (bucket *Bucket) DownloadRequest(path string, body io.WriteCloser) (info *o
 }
 
 // execute a request; date it, sign it, send it
-func (bucket *Bucket) SignAndExecute(req *http.Request) (resp *http.Response, err os.Error) {
-	// 1ime stamp it
+// note: specialcase is temporary hack to set Content-Length: 0 when needed
+func (bucket *Bucket) SignAndExecute(req *http.Request, specialcase bool) (resp *http.Response, err os.Error) {
+	if specialcase {
+		fmt.Println("specialcase")
+	}
+	// time stamp it
 	date := time.LocalTime().Format(time.RFC1123)
 	req.Header.Set("Date", date)
 
@@ -420,7 +445,20 @@ func (bucket *Bucket) SignAndExecute(req *http.Request) (resp *http.Response, er
 	}
 
 	// send the request
-	req.Write(conn)
+	if specialcase {
+		var buf bytes.Buffer
+		req.Write(&buf)
+		fixed := bytes.Replace(buf.Bytes(),
+			[]byte("User-Agent: Go http package\r\n"),
+			[]byte("User-Agent: Go http package\r\nContent-Length: 0\r\n"), 1)
+		_, err = conn.Write(fixed)
+		os.Stdout.Write(fixed)
+	} else {
+		err = req.Write(conn)
+	}
+	if err != nil {
+		return
+	}
 
 	// now read the response
 	reader := bufio.NewReader(conn)
@@ -462,8 +500,8 @@ func (bucket *Bucket) SignRequest(req *http.Request) {
 	hmac.Write([]byte(msg))
 
 	// get a base64 encoding of the signature
-	encoded := new(bytes.Buffer)
-	encoder := base64.NewEncoder(base64.StdEncoding, encoded)
+	var encoded bytes.Buffer
+	encoder := base64.NewEncoder(base64.StdEncoding, &encoded)
 	encoder.Write(hmac.Sum())
 	encoder.Close()
 	signature := encoded.String()
@@ -533,25 +571,33 @@ func main() {
 
 	bucket := NewBucket("static.russross.com", "", false, key, secret)
 
-	filename := "robots.txt"
-	buffer := bytes.NewBuffer(nil)
-	info, err := bucket.DownloadRequest(filename, nopWriteCloser{buffer})
+	filename := "s3.go"
+
+	info, _ := os.Lstat(filename)
+	err := bucket.CopyRequest(filename, "s3copy.go", info)
 	if err != nil {
-		fmt.Println("Failed to download file:", err)
+		fmt.Println("Failed to copy file:", err)
 		os.Exit(-1)
 	}
-	fmt.Println("Contents:", buffer.String())
-	fmt.Printf("Metadata:\n%#v\n", *info)
 
-	//    fp, hash, info, err := bucket.GetFile(filename)
+	//	buffer := bytes.NewBuffer(nil)
+	//	info, err := bucket.DownloadRequest(filename, nopWriteCloser{buffer})
 	//	if err != nil {
-	//		fmt.Println("Failed to get file:", err)
+	//		fmt.Println("Failed to download file:", err)
 	//		os.Exit(-1)
 	//	}
-	//	err = bucket.UploadRequest(filename, fp, hash, info)
-	//	if err != nil {
-	//		fmt.Println("Failed to execute request:", err)
-	//		os.Exit(-1)
-	//	}
-	//	fmt.Println("request succeeded")
+	//	fmt.Println("Contents:", buffer.String())
+	//	fmt.Printf("Metadata:\n%#v\n", *info)
+
+	//	    fp, hash, info, err := bucket.GetFile(filename)
+	//		if err != nil {
+	//			fmt.Println("Failed to get file:", err)
+	//			os.Exit(-1)
+	//		}
+	//		err = bucket.UploadRequest(filename, fp, hash, info)
+	//		if err != nil {
+	//			fmt.Println("Failed to execute request:", err)
+	//			os.Exit(-1)
+	//		}
+	//		fmt.Println("request succeeded")
 }
