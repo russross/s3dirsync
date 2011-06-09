@@ -69,32 +69,133 @@ type Bucket struct {
 	MimeTypes map[string]string
 }
 
-func (bucket *Bucket) PathToURL(pathname string) string {
-	url := bucket.Url + "/"
-	if bucket.UrlPrefix != "" {
-		url += bucket.UrlPrefix + "/"
+func NewBucket(bucket string, prefix string, secure bool, key string, secret string) *Bucket {
+	// read in a list of MIME types if possible
+	mimes := make(map[string]string)
+	if fp, err := os.Open("/etc/mime.types"); err == nil {
+		defer fp.Close()
+		read := bufio.NewReader(fp)
+		for line, isPrefix, err := read.ReadLine(); err == nil; line, isPrefix, err = read.ReadLine() {
+			s := strings.TrimSpace(string(line))
+			if isPrefix || len(s) < 3 || s[0] == '#' {
+				continue
+			}
+			s = strings.Replace(s, " ", "\t", -1)
+			chunks := strings.Split(s, "\t", -1)
+			if len(chunks) < 2 {
+				continue
+			}
+			kind := chunks[0]
+			for _, ext := range chunks[1:] {
+				if ext != "" {
+					mimes[ext] = kind
+				}
+			}
+		}
 	}
-	url += pathname
 
-	return url
-}
-
-func (bucket *Bucket) PathToSrc(pathname string) string {
-	url := "/" + bucket.Bucket + "/"
-	if bucket.UrlPrefix != "" {
-		url += bucket.UrlPrefix + "/"
+	url := "http://" + bucket
+	if secure {
+		url = "https://" + bucket
 	}
-	url += pathname
-
-	return url
+	url += ".s3.amazonaws.com"
+	return &Bucket{
+		Bucket:     bucket,
+		Url:        url,
+		Secure:     secure,
+		UrlPrefix:  "",
+		PathPrefix: "",
+		Key:        key,
+		Secret:     secret,
+		MimeTypes:  mimes,
+	}
 }
 
-func (bucket *Bucket) PathToFileName(path string) string {
-	return filepath.Join(bucket.PathPrefix, path)
+func (bucket *Bucket) UploadRequest(path string, body io.ReadCloser, hash string, info *os.FileInfo) (err os.Error) {
+	_, err = bucket.SendRequest("PUT", "", path, body, hash, info)
+	return
 }
 
-func urlEncode(path string) string {
-	return strings.Replace(http.URLEscape(path), "%2F", "/", -1)
+
+func (bucket *Bucket) DeleteRequest(path string) (err os.Error) {
+	_, err = bucket.SendRequest("DELETE", "", path, nil, "", nil)
+	return
+}
+
+func (bucket *Bucket) StatRequest(path string) (info *os.FileInfo, err os.Error) {
+	var resp *http.Response
+	if resp, err = bucket.SendRequest("HEAD", "", path, nil, "", nil); err != nil {
+		return
+	}
+	info = new(os.FileInfo)
+	info.Name = path
+	bucket.GetResponseMetaData(resp, info)
+	return
+}
+
+func (bucket *Bucket) CopyRequest(from, to string, info *os.FileInfo) (err os.Error) {
+	_, err = bucket.SendRequest("PUT", from, to, nil, "", info)
+	return
+}
+
+func (bucket *Bucket) SetStatRequest(path string, info *os.FileInfo) (err os.Error) {
+	_, err = bucket.SendRequest("PUT", path, path, nil, "", info)
+	return
+}
+
+func (bucket *Bucket) DownloadRequest(path string, body io.WriteCloser) (info *os.FileInfo, err os.Error) {
+	var resp *http.Response
+	if resp, err = bucket.SendRequest("GET", "", path, nil, "", nil); err != nil {
+		return
+	}
+	info = new(os.FileInfo)
+	info.Name = path
+	bucket.GetResponseMetaData(resp, info)
+
+	// download and compute MD5 hash as we go
+	md5hash := md5.New()
+
+	// adapted from io.Copy
+	written := int64(0)
+	buf := make([]byte, 32*1024)
+	for {
+		nr, er := resp.Body.Read(buf)
+		if nr > 0 {
+			md5hash.Write(buf[0:nr])
+			nw, ew := body.Write(buf[0:nr])
+			if nw > 0 {
+				written += int64(nw)
+			}
+			if ew != nil {
+				err = ew
+				break
+			}
+			if nr != nw {
+				err = io.ErrShortWrite
+				break
+			}
+		}
+		if er == os.EOF {
+			break
+		}
+		if er != nil {
+			err = er
+			break
+		}
+	}
+	body.Close()
+
+	if err == nil && written != info.Size {
+		err = io.ErrUnexpectedEOF
+	}
+
+	// hex-encode the md5 hash
+	md5hex := "\"" + hex.EncodeToString(md5hash.Sum()) + "\""
+	if md5hex != resp.Header.Get("Etag") {
+		err = os.NewError("md5sum mismatch for " + path)
+	}
+
+	return
 }
 
 func (bucket *Bucket) SetRequestMetaData(req *http.Request, info *os.FileInfo) {
@@ -299,132 +400,6 @@ func (bucket *Bucket) SendRequest(method string, src, path string, body io.ReadC
 	return
 }
 
-func (bucket *Bucket) GetFile(path string) (body io.ReadCloser, hash string, info *os.FileInfo, err os.Error) {
-	filename := bucket.PathToFileName(path)
-
-	// get file metadata
-	info, err = os.Lstat(filename)
-	if err != nil {
-		return
-	}
-
-	// open the file
-	if info.Size > 0 {
-		fp, err := os.Open(filename)
-		if err != nil {
-			return
-		}
-		body = fp
-
-		// compute md5 hash
-		md5hash := md5.New()
-		if _, err = io.Copy(md5hash, fp); err != nil {
-			fp.Close()
-			return
-		}
-		var encoded bytes.Buffer
-		encoder := base64.NewEncoder(base64.StdEncoding, &encoded)
-		encoder.Write(md5hash.Sum())
-		encoder.Close()
-		hash = encoded.String()
-
-		// rewind the file
-		if _, err = fp.Seek(0, 0); err != nil {
-			fp.Close()
-			return
-		}
-	}
-
-	return
-}
-
-func (bucket *Bucket) UploadRequest(path string, body io.ReadCloser, hash string, info *os.FileInfo) (err os.Error) {
-	_, err = bucket.SendRequest("PUT", "", path, body, hash, info)
-	return
-}
-
-
-func (bucket *Bucket) DeleteRequest(path string) (err os.Error) {
-	_, err = bucket.SendRequest("DELETE", "", path, nil, "", nil)
-	return
-}
-
-func (bucket *Bucket) StatRequest(path string) (info *os.FileInfo, err os.Error) {
-	var resp *http.Response
-	if resp, err = bucket.SendRequest("HEAD", "", path, nil, "", nil); err != nil {
-		return
-	}
-	info = new(os.FileInfo)
-	info.Name = path
-	bucket.GetResponseMetaData(resp, info)
-	return
-}
-
-func (bucket *Bucket) CopyRequest(from, to string, info *os.FileInfo) (err os.Error) {
-	_, err = bucket.SendRequest("PUT", from, to, nil, "", info)
-	return
-}
-
-func (bucket *Bucket) SetStatRequest(path string, info *os.FileInfo) (err os.Error) {
-	_, err = bucket.SendRequest("PUT", path, path, nil, "", info)
-	return
-}
-
-func (bucket *Bucket) DownloadRequest(path string, body io.WriteCloser) (info *os.FileInfo, err os.Error) {
-	var resp *http.Response
-	if resp, err = bucket.SendRequest("GET", "", path, nil, "", nil); err != nil {
-		return
-	}
-	info = new(os.FileInfo)
-	info.Name = path
-	bucket.GetResponseMetaData(resp, info)
-
-	// download and compute MD5 hash as we go
-	md5hash := md5.New()
-
-	// adapted from io.Copy
-	written := int64(0)
-	buf := make([]byte, 32*1024)
-	for {
-		nr, er := resp.Body.Read(buf)
-		if nr > 0 {
-			md5hash.Write(buf[0:nr])
-			nw, ew := body.Write(buf[0:nr])
-			if nw > 0 {
-				written += int64(nw)
-			}
-			if ew != nil {
-				err = ew
-				break
-			}
-			if nr != nw {
-				err = io.ErrShortWrite
-				break
-			}
-		}
-		if er == os.EOF {
-			break
-		}
-		if er != nil {
-			err = er
-			break
-		}
-	}
-	body.Close()
-
-	if err == nil && written != info.Size {
-		err = io.ErrUnexpectedEOF
-	}
-
-	// hex-encode the md5 hash
-	md5hex := "\"" + hex.EncodeToString(md5hash.Sum()) + "\""
-	if md5hex != resp.Header.Get("Etag") {
-		err = os.NewError("md5sum mismatch for " + path)
-	}
-
-	return
-}
-
 // execute a request; date it, sign it, send it
 // note: specialcase is temporary hack to set Content-Length: 0 when needed
 func (bucket *Bucket) SignAndExecute(req *http.Request, specialcase bool) (resp *http.Response, err os.Error) {
@@ -509,95 +484,30 @@ func (bucket *Bucket) SignRequest(req *http.Request) {
 	req.Header.Set("Authorization", "AWS "+bucket.Key+":"+signature)
 }
 
-func NewBucket(bucket string, prefix string, secure bool, key string, secret string) *Bucket {
-	// read in a list of MIME types if possible
-	mimes := make(map[string]string)
-	if fp, err := os.Open("/etc/mime.types"); err == nil {
-		defer fp.Close()
-		read := bufio.NewReader(fp)
-		for line, isPrefix, err := read.ReadLine(); err == nil; line, isPrefix, err = read.ReadLine() {
-			s := strings.TrimSpace(string(line))
-			if isPrefix || len(s) < 3 || s[0] == '#' {
-				continue
-			}
-			s = strings.Replace(s, " ", "\t", -1)
-			chunks := strings.Split(s, "\t", -1)
-			if len(chunks) < 2 {
-				continue
-			}
-			kind := chunks[0]
-			for _, ext := range chunks[1:] {
-				if ext != "" {
-					mimes[ext] = kind
-				}
-			}
-		}
+func (bucket *Bucket) PathToURL(pathname string) string {
+	url := bucket.Url + "/"
+	if bucket.UrlPrefix != "" {
+		url += bucket.UrlPrefix + "/"
 	}
+	url += pathname
 
-	url := "http://" + bucket
-	if secure {
-		url = "https://" + bucket
-	}
-	url += ".s3.amazonaws.com"
-	return &Bucket{
-		Bucket:     bucket,
-		Url:        url,
-		Secure:     secure,
-		UrlPrefix:  "",
-		PathPrefix: "",
-		Key:        key,
-		Secret:     secret,
-		MimeTypes:  mimes,
-	}
+	return url
 }
 
-type nopWriteCloser struct {
-	io.Writer
+func (bucket *Bucket) PathToSrc(pathname string) string {
+	url := "/" + bucket.Bucket + "/"
+	if bucket.UrlPrefix != "" {
+		url += bucket.UrlPrefix + "/"
+	}
+	url += pathname
+
+	return url
 }
 
-func (nopWriteCloser) Close() os.Error { return nil }
+func (bucket *Bucket) PathToFileName(path string) string {
+	return filepath.Join(bucket.PathPrefix, path)
+}
 
-func main() {
-	key := os.Getenv("AWSACCESSKEYID")
-	if key == "" {
-		fmt.Println("AWSACCESSKEYID undefined")
-		os.Exit(-1)
-	}
-	secret := os.Getenv("AWSSECRETACCESSKEY")
-	if secret == "" {
-		fmt.Println("AWSSECRETACCESSKEY undefined")
-		os.Exit(-1)
-	}
-
-	bucket := NewBucket("static.russross.com", "", false, key, secret)
-
-	filename := "s3.go"
-
-	info, _ := os.Lstat(filename)
-	err := bucket.CopyRequest(filename, "s3copy.go", info)
-	if err != nil {
-		fmt.Println("Failed to copy file:", err)
-		os.Exit(-1)
-	}
-
-	//	buffer := bytes.NewBuffer(nil)
-	//	info, err := bucket.DownloadRequest(filename, nopWriteCloser{buffer})
-	//	if err != nil {
-	//		fmt.Println("Failed to download file:", err)
-	//		os.Exit(-1)
-	//	}
-	//	fmt.Println("Contents:", buffer.String())
-	//	fmt.Printf("Metadata:\n%#v\n", *info)
-
-	//	    fp, hash, info, err := bucket.GetFile(filename)
-	//		if err != nil {
-	//			fmt.Println("Failed to get file:", err)
-	//			os.Exit(-1)
-	//		}
-	//		err = bucket.UploadRequest(filename, fp, hash, info)
-	//		if err != nil {
-	//			fmt.Println("Failed to execute request:", err)
-	//			os.Exit(-1)
-	//		}
-	//		fmt.Println("request succeeded")
+func urlEncode(path string) string {
+	return strings.Replace(http.URLEscape(path), "%2F", "/", -1)
 }
