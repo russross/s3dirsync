@@ -106,3 +106,53 @@ func (bucket *Bucket) GetFile(path string) (body io.ReadCloser, hash string, inf
 
 	return
 }
+
+func UpdateFile(bucket *Bucket, cache *Cache, path string) (err os.Error) {
+	// see what is in the local file system
+	filename := bucket.PathToFileName(path)
+	fsInfo, er := os.Lstat(filename)
+
+	if er != nil {
+		// make sure info is nil as a signal for "file not accessible"
+		fsInfo = nil
+	}
+
+	// see what is on the server
+	servername := bucket.PathToServerName(path)
+	serverInfo, serverMd5, err := cache.GetFileInfo(servername)
+	if err != nil {
+		return
+	}
+	if serverInfo == nil && !bucket.TrustCache {
+		if serverInfo, serverMd5, err = bucket.StatRequest(path); err != nil {
+			return
+		}
+	}
+
+	// now compare
+	switch {
+	case fsInfo == nil && serverInfo == nil:
+		// nothing to do
+	case fsInfo == nil && serverInfo != nil:
+		// delete the file
+	case fsInfo != nil && serverInfo == nil ||
+		fsInfo.Mode != serverInfo.Mode ||
+		fsInfo.Uid != serverInfo.Uid ||
+		fsInfo.Gid != serverInfo.Gid ||
+		fsInfo.Size != serverInfo.Size ||
+		fsInfo.Mtime_ns != serverInfo.Mtime_ns:
+		// upload the file
+
+		// get the md5sum of the local file
+		// check for a match in the cache
+		// copy or upload
+	default:
+		if !bucket.TrustMetaData {
+			// check md5sum for a match
+			// upload if different
+			fmt.Println(serverMd5)
+		}
+	}
+
+	return
+}

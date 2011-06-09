@@ -66,7 +66,9 @@ type Bucket struct {
 	Key        string
 	Secret     string
 
-	MimeTypes map[string]string
+	TrustCache    bool
+	TrustMetaData bool
+	MimeTypes     map[string]string
 }
 
 func NewBucket(bucket string, prefix string, secure bool, key string, secret string) *Bucket {
@@ -122,7 +124,7 @@ func (bucket *Bucket) DeleteRequest(path string) (err os.Error) {
 	return
 }
 
-func (bucket *Bucket) StatRequest(path string) (info *os.FileInfo, err os.Error) {
+func (bucket *Bucket) StatRequest(path string) (info *os.FileInfo, md5 string, err os.Error) {
 	var resp *http.Response
 	if resp, err = bucket.SendRequest("HEAD", "", path, nil, "", nil); err != nil {
 		return
@@ -130,6 +132,7 @@ func (bucket *Bucket) StatRequest(path string) (info *os.FileInfo, err os.Error)
 	info = new(os.FileInfo)
 	info.Name = path
 	bucket.GetResponseMetaData(resp, info)
+	md5 = resp.Header.Get("Etag")[1:33]
 	return
 }
 
@@ -378,7 +381,7 @@ func (bucket *Bucket) SendRequest(method string, src, path string, body io.ReadC
 
 	// is this a copy/metadata update?
 	if src != "" {
-		req.Header.Set("X-Amz-Copy-Source", urlEncode(bucket.PathToSrc(src)))
+		req.Header.Set("X-Amz-Copy-Source", urlEncode(bucket.PathToServerName(src)))
 		req.Header.Set("X-Amz-Metadata-Directive", "REPLACE")
 	}
 
@@ -494,7 +497,7 @@ func (bucket *Bucket) PathToURL(pathname string) string {
 	return url
 }
 
-func (bucket *Bucket) PathToSrc(pathname string) string {
+func (bucket *Bucket) PathToServerName(pathname string) string {
 	url := "/" + bucket.Bucket + "/"
 	if bucket.UrlPrefix != "" {
 		url += bucket.UrlPrefix + "/"
