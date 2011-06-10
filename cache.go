@@ -50,6 +50,7 @@ func (db Cache) GetFileInfo(path string) (info *os.FileInfo, md5 string, err os.
 	if err != nil {
 		return
 	}
+	defer stmt.Finalize()
 	if err = stmt.Exec(path); err != nil || !stmt.Next() {
 		return
 	}
@@ -61,16 +62,29 @@ func (db Cache) GetFileInfo(path string) (info *os.FileInfo, md5 string, err os.
 	return
 }
 
-func (db Cache) GetPathFromMd5(md5 string) (path string, err os.Error) {
-	var stmt *sqlite.Stmt
-	stmt, err = db.Prepare("SELECT path FROM cache WHERE md5 = ?")
+func (db Cache) GetPathFromMd5(md5 string, preferred string) (path string, err os.Error) {
+	var stmt1, stmt2 *sqlite.Stmt
+	stmt1, err = db.Prepare("SELECT path FROM cache WHERE md5 = ? AND path = ?")
 	if err != nil {
 		return
 	}
-	if err = stmt.Exec(md5); err != nil || !stmt.Next() {
+	defer stmt1.Finalize()
+	if err = stmt1.Exec(md5, preferred); err != nil {
 		return
 	}
-	err = stmt.Scan(&path)
+	if stmt1.Next() {
+		// this path has the desired md5 hash
+		return preferred, nil
+	}
+	stmt2, err = db.Prepare("SELECT path FROM cache WHERE md5 = ? LIMIT 1")
+	if err != nil {
+		return
+	}
+	defer stmt2.Finalize()
+	if err = stmt2.Exec(md5); err != nil || !stmt2.Next() {
+		return
+	}
+	err = stmt2.Scan(&path)
 	return
 }
 

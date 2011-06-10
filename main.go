@@ -34,6 +34,7 @@ func main() {
 		fmt.Println("Error connecting to database:", err)
 		os.Exit(-1)
 	}
+	defer cache.Close()
 
 	if len(os.Args) != 2 {
 		fmt.Fprintf(os.Stderr, "Usage: %s <file>\n", os.Args[0])
@@ -150,7 +151,7 @@ func UpdateFile(bucket *Bucket, cache Cache, path string) (err os.Error) {
 			}
 
 			// check for a match in the cache
-			if src, err = cache.GetPathFromMd5(md5hex); err != nil {
+			if src, err = cache.GetPathFromMd5(md5hex, fsInfo.Name); err != nil {
 				body.Close()
 				return
 			}
