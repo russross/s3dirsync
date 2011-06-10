@@ -65,9 +65,12 @@ type Bucket struct {
 	Key        string
 	Secret     string
 
-	TrustCache    bool
-	TrustMetaData bool
-	MimeTypes     map[string]string
+	TrustCacheIsComplete bool
+	TrustCacheIsAccurate bool
+	AlwaysHashContents   bool
+	TrackDirectories     bool
+
+	MimeTypes map[string]string
 }
 
 func NewBucket(bucket string, urlprefix string, fsprefix string, secure bool, key string, secret string) *Bucket {

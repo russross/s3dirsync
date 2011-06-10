@@ -7,15 +7,21 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/md5"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"os"
+	"path"
 	"path/filepath"
+	"strings"
 )
+
+const s3_password_file = "/etc/passwd-s3fs"
 
 type File struct {
 	LocalPath      string
@@ -33,39 +39,44 @@ type File struct {
 	Contents io.ReadCloser
 }
 
-func (bucket *Bucket) NewFile(path string) (elt *File) {
+func (bucket *Bucket) NewFile(pathname string) (elt *File) {
+	// form all the different file name variations we need
 	elt = new(File)
-
-	elt.LocalPath = filepath.Join(bucket.PathPrefix, path)
-
-	elt.ServerPath = "/"
-	if bucket.UrlPrefix != "" {
-		elt.ServerPath += bucket.UrlPrefix + "/"
-	}
-	elt.ServerPath += path
-
-	elt.FullServerPath = "/" + bucket.Bucket + "/"
-	if bucket.UrlPrefix != "" {
-		elt.FullServerPath += bucket.UrlPrefix + "/"
-	}
-	elt.FullServerPath += path
-
-	elt.UrlPath = bucket.Url + "/"
-	if bucket.UrlPrefix != "" {
-		elt.UrlPath += bucket.UrlPrefix + "/"
-	}
-	elt.UrlPath += path
-
+	elt.LocalPath = filepath.Join(bucket.PathPrefix, pathname)
+	elt.ServerPath = path.Join("/", bucket.UrlPrefix, pathname)
+	elt.FullServerPath = path.Join("/", bucket.Bucket, elt.ServerPath)
+	elt.UrlPath = bucket.Url + elt.ServerPath
 	return
 }
 
 func main() {
 	key := os.Getenv("AWSACCESSKEYID")
+	secret := os.Getenv("AWSSECRETACCESSKEY")
+	if key == "" || secret == "" {
+		// try reading from password file
+		fp, err := os.Open(s3_password_file)
+		if err == nil {
+			read := bufio.NewReader(fp)
+			for line, isPrefix, err := read.ReadLine(); err == nil; line, isPrefix, err = read.ReadLine() {
+				s := strings.TrimSpace(string(line))
+				if isPrefix || len(s) == 0 || s[0] == '#' {
+					continue
+				}
+				chunks := strings.Split(s, ":", 2)
+				if len(chunks) != 2 {
+					continue
+				}
+				key = chunks[0]
+				secret = chunks[1]
+				break
+			}
+			fp.Close()
+		}
+	}
 	if key == "" {
 		fmt.Println("AWSACCESSKEYID undefined")
 		os.Exit(-1)
 	}
-	secret := os.Getenv("AWSSECRETACCESSKEY")
 	if secret == "" {
 		fmt.Println("AWSSECRETACCESSKEY undefined")
 		os.Exit(-1)
@@ -98,14 +109,33 @@ func main() {
 // if file has Size == 0, this function does nothing
 func (bucket *Bucket) GetMd5(elt *File) (err os.Error) {
 	// don't bother for empty files
-	if elt.LocalInfo.Size > 0 {
+	if elt.LocalInfo.Size == 0 || elt.LocalInfo.IsDirectory() {
+		return
+	}
+
+	hash := md5.New()
+
+	// is it a symlink?
+	if elt.LocalInfo.IsSymlink() {
+		// read the link
+		var target string
+		if target, err = os.Readlink(elt.LocalPath); err != nil {
+			return
+		}
+
+		// compute the hash
+		hash.Write([]byte(target))
+
+		// wrap it up as an io.ReadCloser
+		elt.Contents = ioutil.NopCloser(bytes.NewBufferString(target))
+	} else {
+		// regular file
 		var fp *os.File
 		if fp, err = os.Open(elt.LocalPath); err != nil {
 			return
 		}
 
 		// compute md5 hash
-		hash := md5.New()
 		if _, err = io.Copy(hash, fp); err != nil {
 			fp.Close()
 			return
@@ -116,18 +146,18 @@ func (bucket *Bucket) GetMd5(elt *File) (err os.Error) {
 			return
 		}
 		elt.Contents = fp
-
-		// get the hash in hex
-		sum := hash.Sum()
-		elt.LocalHashHex = hex.EncodeToString(sum)
-
-		// and in base64
-		var buf bytes.Buffer
-		encoder := base64.NewEncoder(base64.StdEncoding, &buf)
-		encoder.Write(sum)
-		encoder.Close()
-		elt.LocalHashBase64 = buf.String()
 	}
+
+	// get the hash in hex
+	sum := hash.Sum()
+	elt.LocalHashHex = hex.EncodeToString(sum)
+
+	// and in base64
+	var buf bytes.Buffer
+	encoder := base64.NewEncoder(base64.StdEncoding, &buf)
+	encoder.Write(sum)
+	encoder.Close()
+	elt.LocalHashBase64 = buf.String()
 
 	return
 }
@@ -148,7 +178,8 @@ func UpdateFile(bucket *Bucket, cache Cache, elt *File) (err os.Error) {
 	if err = cache.GetFileInfo(elt); err != nil {
 		return
 	}
-	if elt.ServerInfo == nil && !bucket.TrustCache {
+	switch {
+	case elt.ServerInfo == nil && !bucket.TrustCacheIsComplete:
 		if err = bucket.StatRequest(elt); err != nil {
 			return
 		}
@@ -159,6 +190,36 @@ func UpdateFile(bucket *Bucket, cache Cache, elt *File) (err os.Error) {
 				return
 			}
 		}
+
+	case elt.ServerInfo != nil && !bucket.TrustCacheIsAccurate:
+		cacheinfo := elt.ServerInfo
+		cachehash := elt.ServerHashHex
+		elt.ServerInfo = nil
+		elt.ServerHashHex = ""
+		if err = bucket.StatRequest(elt); err != nil {
+			return
+		}
+		if elt.ServerInfo == nil || elt.ServerHashHex == "" {
+			// cache said we had something, server disagrees
+			fmt.Printf("Removing bogus cache entry [%s]\n", elt.ServerPath)
+			if err = cache.DeleteFileInfo(elt); err != nil {
+				return
+			}
+		} else {
+			// see if the server and the cache disagree
+			if cachehash != elt.ServerHashHex ||
+				cacheinfo.Uid != elt.ServerInfo.Uid ||
+				cacheinfo.Gid != elt.ServerInfo.Gid ||
+				cacheinfo.Mode != elt.ServerInfo.Mode ||
+				cacheinfo.Mtime_ns != elt.ServerInfo.Mtime_ns ||
+				cacheinfo.Size != elt.ServerInfo.Size {
+
+				fmt.Printf("Updating bogus cache entry [%s]\n", elt.ServerPath)
+				if err = cache.SetFileInfo(elt, false); err != nil {
+					return
+				}
+			}
+		}
 	}
 
 	// now compare
@@ -167,6 +228,7 @@ func UpdateFile(bucket *Bucket, cache Cache, elt *File) (err os.Error) {
 		// nothing to do
 		fmt.Printf("No such file locally or on server [%s]\n", elt.ServerPath)
 		return
+
 	case elt.LocalInfo == nil && elt.ServerInfo != nil:
 		// delete the file
 		fmt.Printf("Deleting file [%s]\n", elt.ServerPath)
@@ -182,6 +244,7 @@ func UpdateFile(bucket *Bucket, cache Cache, elt *File) (err os.Error) {
 			return
 		}
 		return
+
 	case elt.LocalInfo != nil && elt.ServerInfo == nil ||
 		elt.LocalInfo.Mode != elt.ServerInfo.Mode ||
 		elt.LocalInfo.Uid != elt.ServerInfo.Uid ||
@@ -198,8 +261,28 @@ func UpdateFile(bucket *Bucket, cache Cache, elt *File) (err os.Error) {
 			}
 		}
 
+		// is this a kind of file we don't track?
+		if !elt.LocalInfo.IsRegular() &&
+			!elt.LocalInfo.IsSymlink() &&
+			(!bucket.TrackDirectories || !elt.LocalInfo.IsDirectory()) {
+			if elt.ServerInfo != nil {
+				// the current file must have replaced an old regular file
+				fmt.Printf("Deleting old file masked by untracked file [%s]\n", elt.ServerPath)
+				if err = bucket.DeleteRequest(elt); err != nil {
+					return
+				}
+				if err = cache.DeleteFileInfo(elt); err != nil {
+					return
+				}
+			} else {
+				fmt.Printf("Ignoring untracked file [%s]\n", elt.ServerPath)
+			}
+
+			return
+		}
+
 		// is it an empty file?
-		if elt.LocalInfo.Size == 0 {
+		if elt.LocalInfo.Size == 0 || elt.LocalInfo.IsDirectory() {
 			fmt.Printf("Uploading zero-length file [%s]\n", elt.ServerPath)
 			if err = bucket.UploadRequest(elt); err != nil {
 				return
@@ -215,7 +298,7 @@ func UpdateFile(bucket *Bucket, cache Cache, elt *File) (err os.Error) {
 			return
 		}
 
-		// elt.Contents is live now, so be careful to make sure it is closed
+		// elt.Contents is live now, so make sure it gets closed
 
 		var src string
 		if elt.LocalHashHex == elt.ServerHashHex {
@@ -260,8 +343,9 @@ func UpdateFile(bucket *Bucket, cache Cache, elt *File) (err os.Error) {
 		}
 
 		return
+
 	default:
-		if !bucket.TrustMetaData && elt.LocalInfo.Size > 0 {
+		if !bucket.AlwaysHashContents && elt.LocalInfo.Size > 0 {
 			// check md5sum for a match
 			if err = bucket.GetMd5(elt); err != nil {
 				return
