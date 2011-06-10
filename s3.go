@@ -71,7 +71,7 @@ type Bucket struct {
 	MimeTypes     map[string]string
 }
 
-func NewBucket(bucket string, prefix string, secure bool, key string, secret string) *Bucket {
+func NewBucket(bucket string, urlprefix string, fsprefix string, secure bool, key string, secret string) *Bucket {
 	// read in a list of MIME types if possible
 	mimes := make(map[string]string)
 	if fp, err := os.Open("/etc/mime.types"); err == nil {
@@ -105,8 +105,8 @@ func NewBucket(bucket string, prefix string, secure bool, key string, secret str
 		Bucket:     bucket,
 		Url:        url,
 		Secure:     secure,
-		UrlPrefix:  "",
-		PathPrefix: "",
+		UrlPrefix:  urlprefix,
+		PathPrefix: fsprefix,
 		Key:        key,
 		Secret:     secret,
 		MimeTypes:  mimes,
@@ -127,6 +127,10 @@ func (bucket *Bucket) DeleteRequest(path string) (err os.Error) {
 func (bucket *Bucket) StatRequest(path string) (info *os.FileInfo, md5 string, err os.Error) {
 	var resp *http.Response
 	if resp, err = bucket.SendRequest("HEAD", "", path, nil, "", nil); err != nil {
+		if resp == nil || resp.StatusCode != 404 {
+			return
+		}
+		err = nil
 		return
 	}
 	info = new(os.FileInfo)
@@ -142,7 +146,7 @@ func (bucket *Bucket) CopyRequest(from, to string, info *os.FileInfo) (err os.Er
 }
 
 func (bucket *Bucket) SetStatRequest(path string, info *os.FileInfo) (err os.Error) {
-	_, err = bucket.SendRequest("PUT", path, path, nil, "", info)
+	_, err = bucket.SendRequest("PUT", bucket.PathToFullServerName(path), path, nil, "", info)
 	return
 }
 
@@ -381,7 +385,8 @@ func (bucket *Bucket) SendRequest(method string, src, path string, body io.ReadC
 
 	// is this a copy/metadata update?
 	if src != "" {
-		req.Header.Set("X-Amz-Copy-Source", urlEncode(bucket.PathToServerName(src)))
+		// note: src should already be a full bucket + path name
+		req.Header.Set("X-Amz-Copy-Source", urlEncode(src))
 		req.Header.Set("X-Amz-Metadata-Directive", "REPLACE")
 	}
 
@@ -406,9 +411,6 @@ func (bucket *Bucket) SendRequest(method string, src, path string, body io.ReadC
 // execute a request; date it, sign it, send it
 // note: specialcase is temporary hack to set Content-Length: 0 when needed
 func (bucket *Bucket) SignAndExecute(req *http.Request, specialcase bool) (resp *http.Response, err os.Error) {
-	if specialcase {
-		fmt.Println("specialcase")
-	}
 	// time stamp it
 	date := time.LocalTime().Format(time.RFC1123)
 	req.Header.Set("Date", date)
@@ -430,7 +432,6 @@ func (bucket *Bucket) SignAndExecute(req *http.Request, specialcase bool) (resp 
 			[]byte("User-Agent: Go http package\r\n"),
 			[]byte("User-Agent: Go http package\r\nContent-Length: 0\r\n"), 1)
 		_, err = conn.Write(fixed)
-		os.Stdout.Write(fixed)
 	} else {
 		err = req.Write(conn)
 	}
@@ -498,6 +499,16 @@ func (bucket *Bucket) PathToURL(pathname string) string {
 }
 
 func (bucket *Bucket) PathToServerName(pathname string) string {
+	url := "/"
+	if bucket.UrlPrefix != "" {
+		url += bucket.UrlPrefix + "/"
+	}
+	url += pathname
+
+	return url
+}
+
+func (bucket *Bucket) PathToFullServerName(pathname string) string {
 	url := "/" + bucket.Bucket + "/"
 	if bucket.UrlPrefix != "" {
 		url += bucket.UrlPrefix + "/"

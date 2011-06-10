@@ -1,4 +1,5 @@
 *.8
 *.out
 *.swp
+*.sqlite
 propolis

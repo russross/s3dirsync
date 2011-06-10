@@ -45,7 +45,7 @@ func Connect(filename string) (db Cache, err os.Error) {
 
 func (db Cache) GetFileInfo(path string) (info *os.FileInfo, md5 string, err os.Error) {
 	var stmt *sqlite.Stmt
-	stmt, err = db.Prepare("SELECT md5, uid, gid, mode, mtime, size\n" +
+	stmt, err = db.Prepare("SELECT md5, uid, gid, mode, mtime, size " +
 		"FROM cache WHERE path = ?")
 	if err != nil {
 		return
@@ -55,7 +55,9 @@ func (db Cache) GetFileInfo(path string) (info *os.FileInfo, md5 string, err os.
 	}
 	info = new(os.FileInfo)
 	info.Name = path
-	err = stmt.Scan(&md5, &info.Uid, &info.Gid, &info.Mode, &info.Mtime_ns, &info.Size)
+	var mode int64
+	err = stmt.Scan(&md5, &info.Uid, &info.Gid, &mode, &info.Mtime_ns, &info.Size)
+	info.Mode = uint32(mode)
 	return
 }
 

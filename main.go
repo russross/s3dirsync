@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"crypto/md5"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -27,55 +28,28 @@ func main() {
 		os.Exit(-1)
 	}
 
-	bucket := NewBucket("static.russross.com", "", false, key, secret)
-
-	filename := "s3.go"
-
-	info, _ := os.Lstat(filename)
-	err := bucket.CopyRequest(filename, "s3copy.go", info)
+	bucket := NewBucket("static.russross.com", "propolis", "", false, key, secret)
+	cache, err := Connect("metadata.sqlite")
 	if err != nil {
-		fmt.Println("Failed to copy file:", err)
+		fmt.Println("Error connecting to database:", err)
 		os.Exit(-1)
 	}
 
-	//	buffer := bytes.NewBuffer(nil)
-	//	info, err := bucket.DownloadRequest(filename, nopWriteCloser{buffer})
-	//	if err != nil {
-	//		fmt.Println("Failed to download file:", err)
-	//		os.Exit(-1)
-	//	}
-	//	fmt.Println("Contents:", buffer.String())
-	//	fmt.Printf("Metadata:\n%#v\n", *info)
+	if len(os.Args) != 2 {
+		fmt.Fprintf(os.Stderr, "Usage: %s <file>\n", os.Args[0])
+		os.Exit(-1)
+	}
+	filename := os.Args[1]
 
-	//	    fp, hash, info, err := bucket.GetFile(filename)
-	//		if err != nil {
-	//			fmt.Println("Failed to get file:", err)
-	//			os.Exit(-1)
-	//		}
-	//		err = bucket.UploadRequest(filename, fp, hash, info)
-	//		if err != nil {
-	//			fmt.Println("Failed to execute request:", err)
-	//			os.Exit(-1)
-	//		}
-	//		fmt.Println("request succeeded")
+	if err = UpdateFile(bucket, cache, filename); err != nil {
+		fmt.Fprintln(os.Stderr, "Failed:", err)
+		os.Exit(-1)
+	}
 }
-
-// needed just for testing
-type nopWriteCloser struct {
-	io.Writer
-}
-
-func (nopWriteCloser) Close() os.Error { return nil }
 
 // open a file and get info for an upload operation
-func (bucket *Bucket) GetFile(path string) (body io.ReadCloser, hash string, info *os.FileInfo, err os.Error) {
+func (bucket *Bucket) GetMd5(info *os.FileInfo, path string) (body io.ReadCloser, hashhex string, hash64 string, err os.Error) {
 	filename := bucket.PathToFileName(path)
-
-	// get file metadata
-	info, err = os.Lstat(filename)
-	if err != nil {
-		return
-	}
 
 	// open the file
 	if info.Size > 0 {
@@ -91,11 +65,14 @@ func (bucket *Bucket) GetFile(path string) (body io.ReadCloser, hash string, inf
 			fp.Close()
 			return
 		}
+
+		hashhex = hex.EncodeToString(md5hash.Sum())
+
 		var encoded bytes.Buffer
 		encoder := base64.NewEncoder(base64.StdEncoding, &encoded)
 		encoder.Write(md5hash.Sum())
 		encoder.Close()
-		hash = encoded.String()
+		hash64 = encoded.String()
 
 		// rewind the file
 		if _, err = fp.Seek(0, 0); err != nil {
@@ -107,7 +84,7 @@ func (bucket *Bucket) GetFile(path string) (body io.ReadCloser, hash string, inf
 	return
 }
 
-func UpdateFile(bucket *Bucket, cache *Cache, path string) (err os.Error) {
+func UpdateFile(bucket *Bucket, cache Cache, path string) (err os.Error) {
 	// see what is in the local file system
 	filename := bucket.PathToFileName(path)
 	fsInfo, er := os.Lstat(filename)
@@ -115,6 +92,8 @@ func UpdateFile(bucket *Bucket, cache *Cache, path string) (err os.Error) {
 	if er != nil {
 		// make sure info is nil as a signal for "file not accessible"
 		fsInfo = nil
+	} else {
+		fsInfo.Name = bucket.PathToServerName(path)
 	}
 
 	// see what is on the server
@@ -127,14 +106,32 @@ func UpdateFile(bucket *Bucket, cache *Cache, path string) (err os.Error) {
 		if serverInfo, serverMd5, err = bucket.StatRequest(path); err != nil {
 			return
 		}
+		if serverInfo != nil {
+			// the cache appears to be out of date, so update it
+			serverInfo.Name = bucket.PathToServerName(path)
+
+			fmt.Printf("Adding missing cache entry [%s]\n", path)
+			if err = cache.SetFileInfo(serverInfo, serverMd5); err != nil {
+				return
+			}
+		}
 	}
 
 	// now compare
 	switch {
 	case fsInfo == nil && serverInfo == nil:
 		// nothing to do
+		fmt.Printf("No such file locally or on server [%s]\n", path)
 	case fsInfo == nil && serverInfo != nil:
 		// delete the file
+		fmt.Printf("Deleting file [%s]\n", path)
+		if err = bucket.DeleteRequest(path); err != nil {
+			return
+		}
+		// delete the cache entry
+		if err = cache.DeleteFileInfo(servername); err != nil {
+			return
+		}
 	case fsInfo != nil && serverInfo == nil ||
 		fsInfo.Mode != serverInfo.Mode ||
 		fsInfo.Uid != serverInfo.Uid ||
@@ -144,13 +141,85 @@ func UpdateFile(bucket *Bucket, cache *Cache, path string) (err os.Error) {
 		// upload the file
 
 		// get the md5sum of the local file
-		// check for a match in the cache
-		// copy or upload
+		var body io.ReadCloser
+		var md5hex, md5base64 string
+		var src string
+		if fsInfo.Size > 0 {
+			if body, md5hex, md5base64, err = bucket.GetMd5(fsInfo, path); err != nil {
+				return
+			}
+
+			// check for a match in the cache
+			if src, err = cache.GetPathFromMd5(md5hex); err != nil {
+				body.Close()
+				return
+			}
+		}
+
+		if src != "" {
+			src = "/" + bucket.Bucket + src
+
+			// copy an existing file
+			if err = cache.DeleteFileInfo(servername); err != nil {
+				body.Close()
+				return
+			}
+
+			fmt.Printf("Copying file [%s] to [%s]\n", src, servername)
+			fmt.Printf("[%s]->[%s]\n", md5hex, serverMd5)
+			if err = bucket.CopyRequest(src, path, fsInfo); err != nil {
+				// copy failed, so try a regular upload
+				fmt.Printf("Copy failed, uploading [%s]\n", path)
+				if err = bucket.UploadRequest(path, body, md5base64, fsInfo); err != nil {
+					return
+				}
+			} else {
+				body.Close()
+			}
+
+			if err = cache.SetFileInfo(fsInfo, md5hex); err != nil {
+				return
+			}
+		} else {
+			// upload the file
+			fmt.Printf("Uploading [%s]\n", path)
+			if err = cache.DeleteFileInfo(servername); err != nil {
+				body.Close()
+				return
+			}
+			if err = bucket.UploadRequest(path, body, md5base64, fsInfo); err != nil {
+				return
+			}
+			if err = cache.SetFileInfo(fsInfo, md5hex); err != nil {
+				return
+			}
+		}
 	default:
-		if !bucket.TrustMetaData {
+		if !bucket.TrustMetaData && fsInfo.Size > 0 {
 			// check md5sum for a match
+			var body io.ReadCloser
+			var md5hex, md5base64 string
+			if body, md5hex, md5base64, err = bucket.GetMd5(fsInfo, path); err != nil {
+				return
+			}
+
 			// upload if different
-			fmt.Println(serverMd5)
+			if md5hex != serverMd5 {
+				fmt.Printf("MD5 mismatch, uploading [%s]\n", path)
+				if err = cache.DeleteFileInfo(servername); err != nil {
+					body.Close()
+					return
+				}
+				if err = bucket.UploadRequest(path, body, md5base64, fsInfo); err != nil {
+					return
+				}
+				if err = cache.SetFileInfo(fsInfo, md5hex); err != nil {
+					return
+				}
+			} else {
+				fmt.Printf("No change [%s]\n", path)
+				body.Close()
+			}
 		}
 	}
 
