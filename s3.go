@@ -19,7 +19,6 @@ import (
 	"net"
 	"os"
 	"os/user"
-	"path/filepath"
 	"strings"
 	"time"
 )
@@ -486,40 +485,6 @@ func (bucket *Bucket) SignRequest(req *http.Request) {
 	signature := encoded.String()
 
 	req.Header.Set("Authorization", "AWS "+bucket.Key+":"+signature)
-}
-
-func (bucket *Bucket) PathToURL(pathname string) string {
-	url := bucket.Url + "/"
-	if bucket.UrlPrefix != "" {
-		url += bucket.UrlPrefix + "/"
-	}
-	url += pathname
-
-	return url
-}
-
-func (bucket *Bucket) PathToServerName(pathname string) string {
-	url := "/"
-	if bucket.UrlPrefix != "" {
-		url += bucket.UrlPrefix + "/"
-	}
-	url += pathname
-
-	return url
-}
-
-func (bucket *Bucket) PathToFullServerName(pathname string) string {
-	url := "/" + bucket.Bucket + "/"
-	if bucket.UrlPrefix != "" {
-		url += bucket.UrlPrefix + "/"
-	}
-	url += pathname
-
-	return url
-}
-
-func (bucket *Bucket) PathToFileName(path string) string {
-	return filepath.Join(bucket.PathPrefix, path)
 }
 
 func urlEncode(path string) string {
