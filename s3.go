@@ -113,40 +113,40 @@ func NewBucket(bucket string, urlprefix string, fsprefix string, secure bool, ke
 	}
 }
 
-func (bucket *Bucket) UploadRequest(path string, body io.ReadCloser, hash string, info *os.FileInfo) (err os.Error) {
-	_, err = bucket.SendRequest("PUT", "", path, body, hash, info)
+func (bucket *Bucket) UploadRequest(elt *File) (err os.Error) {
+	_, err = bucket.SendRequest("PUT", "", elt.UrlPath, elt.Contents, elt.LocalHashBase64, elt.LocalInfo)
 	return
 }
 
 
-func (bucket *Bucket) DeleteRequest(path string) (err os.Error) {
-	_, err = bucket.SendRequest("DELETE", "", path, nil, "", nil)
+func (bucket *Bucket) DeleteRequest(elt *File) (err os.Error) {
+	_, err = bucket.SendRequest("DELETE", "", elt.UrlPath, nil, "", nil)
 	return
 }
 
-func (bucket *Bucket) StatRequest(path string) (info *os.FileInfo, md5 string, err os.Error) {
+func (bucket *Bucket) StatRequest(elt *File) (err os.Error) {
 	var resp *http.Response
-	if resp, err = bucket.SendRequest("HEAD", "", path, nil, "", nil); err != nil {
-		if resp == nil || resp.StatusCode != 404 {
-			return
+	if resp, err = bucket.SendRequest("HEAD", "", elt.UrlPath, nil, "", nil); err != nil {
+		// we don't consider "not found" an error
+		if resp != nil && resp.StatusCode == 404 {
+			err = nil
 		}
-		err = nil
 		return
 	}
-	info = new(os.FileInfo)
-	info.Name = path
-	bucket.GetResponseMetaData(resp, info)
-	md5 = resp.Header.Get("Etag")[1:33]
+	elt.ServerInfo = new(os.FileInfo)
+	elt.ServerInfo.Name = elt.ServerPath
+	bucket.GetResponseMetaData(resp, elt.ServerInfo)
+	elt.ServerHashHex = resp.Header.Get("Etag")[1:33]
 	return
 }
 
-func (bucket *Bucket) CopyRequest(from, to string, info *os.FileInfo) (err os.Error) {
-	_, err = bucket.SendRequest("PUT", from, to, nil, "", info)
+func (bucket *Bucket) CopyRequest(elt *File, src string) (err os.Error) {
+	_, err = bucket.SendRequest("PUT", src, elt.UrlPath, nil, "", elt.LocalInfo)
 	return
 }
 
-func (bucket *Bucket) SetStatRequest(path string, info *os.FileInfo) (err os.Error) {
-	_, err = bucket.SendRequest("PUT", bucket.PathToFullServerName(path), path, nil, "", info)
+func (bucket *Bucket) SetStatRequest(elt *File) (err os.Error) {
+	_, err = bucket.SendRequest("PUT", elt.FullServerPath, elt.UrlPath, nil, "", elt.LocalInfo)
 	return
 }
 
@@ -353,7 +353,7 @@ func (bucket *Bucket) GetResponseMetaData(resp *http.Response, info *os.FileInfo
 	}
 }
 
-func (bucket *Bucket) SendRequest(method string, src, path string, body io.ReadCloser, hash string, info *os.FileInfo) (resp *http.Response, err os.Error) {
+func (bucket *Bucket) SendRequest(method string, src, target string, body io.ReadCloser, hash string, info *os.FileInfo) (resp *http.Response, err os.Error) {
 	defer func() {
 		// if anything goes wrong, close the body reader
 		// if it ends normally, this will be closed already and set to nil
@@ -363,7 +363,7 @@ func (bucket *Bucket) SendRequest(method string, src, path string, body io.ReadC
 	}()
 
 	var req *http.Request
-	if req, err = http.NewRequest(method, bucket.PathToURL(path), body); err != nil {
+	if req, err = http.NewRequest(method, target, body); err != nil {
 		return
 	}
 
