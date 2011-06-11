@@ -19,8 +19,10 @@ import (
 	"net"
 	"os"
 	"os/user"
+	"strconv"
 	"strings"
 	"time"
+	"xml"
 )
 
 const (
@@ -71,6 +73,24 @@ type Bucket struct {
 	TrackDirectories     bool
 
 	MimeTypes map[string]string
+}
+
+// results from bucket list requests
+type Contents struct {
+	Key          string
+	LastModified string
+	ETag         string
+	Size         int64
+}
+
+type ListBucketResult struct {
+	Name        string
+	Prefix      string
+	Marker      string
+	NextMarker  string
+	MaxKeys     int
+	IsTruncated bool
+	Contents    []Contents
 }
 
 func NewBucket(bucket string, urlprefix string, fsprefix string, secure bool, key string, secret string) *Bucket {
@@ -204,6 +224,48 @@ func (bucket *Bucket) DownloadRequest(path string, body io.WriteCloser) (info *o
 		err = os.NewError("md5sum mismatch for " + path)
 	}
 
+	return
+}
+
+func (bucket *Bucket) ListRequest(path string, marker string, maxEntries int, includeAll bool) (listresult *ListBucketResult, err os.Error) {
+	// set up the query string
+	var prefix string
+
+	// are we scanning a subdirectory or starting at the root?
+	if path != "/" {
+		prefix = path[1:] + "/"
+	}
+
+	query := bucket.Url + "/?prefix=" + urlEncode(prefix)
+
+	// are we scanning just a single directory or getting everything?
+	if !includeAll {
+		query += "&delimiter=/"
+	}
+
+	// are we continuing an earlier scan?
+	if marker != "" {
+		query += "&marker=" + urlEncode(marker)
+	}
+
+	// restrict the maximum number of entries returned
+	query += "&max-keys=" + strconv.Itoa(maxEntries)
+
+	// issue the request
+	var resp *http.Response
+	if resp, err = bucket.SendRequest("GET", "", query, nil, "", nil); err != nil {
+		return
+	}
+	if resp.Body != nil {
+		defer resp.Body.Close()
+	}
+
+	// parse the stuff we care about from the xml result
+	listresult = &ListBucketResult{}
+	if err = xml.Unmarshal(resp.Body, listresult); err != nil {
+		listresult = nil
+		return
+	}
 	return
 }
 

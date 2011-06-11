@@ -29,6 +29,7 @@ func Connect(filename string) (db Cache, err os.Error) {
 		"    mode INTEGER,\n" +
 		"    mtime INTEGER,\n" +
 		"    size INTEGER,\n" +
+		"    flag INTEGER,\n" +
 		"    PRIMARY KEY (path)\n" +
 		")\n")
 	if err != nil {
@@ -107,14 +108,15 @@ func (db Cache) SetFileInfo(elt *File, uselocal bool) (err os.Error) {
 		info = elt.ServerInfo
 		hash = elt.ServerHashHex
 	}
-	err = db.Exec("INSERT INTO cache VALUES (?, ?, ?, ?, ?, ?, ?)",
+	err = db.Exec("INSERT INTO cache VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
 		info.Name,
 		hash,
 		info.Uid,
 		info.Gid,
 		info.Mode,
 		info.Mtime_ns,
-		info.Size)
+		info.Size,
+		0)
 	return
 }
 

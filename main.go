@@ -63,6 +63,22 @@ func main() {
 	}
 	defer cache.Close()
 
+	fmt.Println("Issuing a list request")
+	finished := false
+	marker := ""
+	for !finished {
+		var list *ListBucketResult
+		if list, err = bucket.ListRequest("/", marker, 100, true); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(-1)
+		}
+		dumpList(list)
+		finished = !list.IsTruncated
+		if len(list.Contents) > 0 {
+			marker = list.Contents[len(list.Contents)-1].Key
+		}
+	}
+
 	q, end := StartQueue(bucket, cache, 10, 25)
 
 	if len(os.Args) != 2 {
@@ -77,6 +93,19 @@ func main() {
 	end <- done
 	<-done
 	fmt.Println("Quitting")
+}
+
+func dumpList(list *ListBucketResult) {
+	fmt.Println()
+	fmt.Printf("%15s: %v\n", "Name", list.Name)
+	fmt.Printf("%15s: %#v\n", "Prefix", list.Prefix)
+	fmt.Printf("%15s: %#v\n", "Marker", list.Marker)
+	fmt.Printf("%15s: %#v\n", "NextMarker", list.NextMarker)
+	fmt.Printf("%15s: %v\n", "MaxKeys", list.MaxKeys)
+	fmt.Printf("%15s: %v\n", "IsTruncated", list.IsTruncated)
+	for _, elt := range list.Contents {
+		fmt.Printf("%-80s %s %d\n", elt.Key, elt.ETag, elt.Size)
+	}
 }
 
 type Walker chan FileName
