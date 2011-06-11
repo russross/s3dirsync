@@ -90,17 +90,21 @@ func main() {
 	}
 	defer cache.Close()
 
-	if len(os.Args) != 2 {
-		fmt.Fprintf(os.Stderr, "Usage: %s <file>\n", os.Args[0])
-		os.Exit(-1)
+	q, end := StartQueue(bucket, cache, 10, 1)
+	fmt.Println("Type file names to be synced.  A blank line quits")
+	for {
+		var path string
+		if n, err := fmt.Scanln(&path); n != 1 || err != nil {
+			break
+		}
+		q <- path
 	}
 
-	file := bucket.NewFile(os.Args[1])
-
-	if err = UpdateFile(bucket, cache, file); err != nil {
-		fmt.Fprintln(os.Stderr, "Failed:", err)
-		os.Exit(-1)
-	}
+	fmt.Println("Waiting for queue to empty...")
+	done := make(chan bool)
+	end <- done
+	<-done
+	fmt.Println("Quitting")
 }
 
 // open a file and compute an md5 hash for its contents
