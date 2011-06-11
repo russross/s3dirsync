@@ -90,14 +90,14 @@ func main() {
 	}
 	defer cache.Close()
 
-	q, end := StartQueue(bucket, cache, 10, 1)
+	q, end := StartQueue(bucket, cache, 10, 25)
 	fmt.Println("Type file names to be synced.  A blank line quits")
 	for {
 		var path string
 		if n, err := fmt.Scanln(&path); n != 1 || err != nil {
 			break
 		}
-		q <- path
+		q <- FileName{path, false}
 	}
 
 	fmt.Println("Waiting for queue to empty...")

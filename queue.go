@@ -28,15 +28,20 @@ func (q *Queue) Less(i, j int) bool {
 	return q.At(i).(*Candidate).Inserted < q.At(j).(*Candidate).Inserted
 }
 
+type FileName struct {
+	Name      string
+	Immediate bool
+}
+
 // Start the main queue loop. The channel that is returned
 // accepts relative path names as input. It waits for at least
 // delay seconds from the last time that path came through
 // the channel, then issues a FileUpdate action on it.
 // At most maxInFlight updates will be launched in parallel, which
 // may delay some requests beyond delay seconds.
-func StartQueue(bucket *Bucket, cache Cache, delay int, maxInFlight int) (check chan string, quit chan chan bool) {
+func StartQueue(bucket *Bucket, cache Cache, delay int, maxInFlight int) (check chan FileName, quit chan chan bool) {
 	// a path coming in on this channel should be checked after a delay
-	check = make(chan string)
+	check = make(chan FileName)
 
 	// the main queue of files that are waiting to be updated
 	queue := new(Queue)
@@ -64,8 +69,10 @@ func StartQueue(bucket *Bucket, cache Cache, delay int, maxInFlight int) (check 
 	go func() {
 		for {
 			select {
-			case path := <-check:
-				fmt.Printf("Q: incoming request [%s]\n", path)
+			case fn := <-check:
+				path := fn.Name
+				immediate := fn.Immediate
+				//fmt.Printf("Q: incoming request [%s]\n", path)
 
 				// record the incoming request
 				now := time.Nanoseconds()
@@ -74,21 +81,26 @@ func StartQueue(bucket *Bucket, cache Cache, delay int, maxInFlight int) (check 
 				if elt, present := pendingCandidates[path]; present {
 					// touch an existing entry
 					elt.Updated = now
-					fmt.Printf("Q: pending candidate touched [%s]\n", path)
+					//fmt.Printf("Q: pending candidate touched [%s]\n", path)
 				} else {
 					// new entry
 					elt := &Candidate{path, now, now}
+					if immediate {
+						// move this request back in time
+						elt.Inserted -= int64(delay) * 1e9
+						elt.Updated -= int64(delay) * 1e9
+					}
 
 					// put it in the queue
 					heap.Push(queue, elt)
 
 					// and in the map so we can find it by path name
 					pendingCandidates[path] = elt
-					fmt.Printf("Q: new candidate added [%s]\n", path)
+					//fmt.Printf("Q: new candidate added [%s]\n", path)
 				}
 
 			case <-timeout:
-				fmt.Printf("Q: timeout expired, checking queue\n")
+				//fmt.Printf("Q: timeout expired, checking queue\n")
 				waiting = false
 				now := time.Nanoseconds()
 
@@ -100,14 +112,14 @@ func StartQueue(bucket *Bucket, cache Cache, delay int, maxInFlight int) (check 
 					if elt.Inserted != elt.Updated {
 						elt.Inserted = elt.Updated
 						heap.Push(queue, elt)
-						fmt.Printf("Q: touched candidate requeued [%s]\n", elt.Path)
+						//fmt.Printf("Q: touched candidate requeued [%s]\n", elt.Path)
 						continue
 					}
 
 					// has the delay been long enough?
-					if now-elt.Inserted < int64(delay)*1e9 {
+					if now-elt.Inserted < int64(delay)*1e9 && shutdown == nil {
 						heap.Push(queue, elt)
-						fmt.Printf("Q: oldest entry not old enough [%s]\n", elt.Path)
+						//fmt.Printf("Q: oldest entry not old enough [%s]\n", elt.Path)
 						break
 					}
 
@@ -115,7 +127,7 @@ func StartQueue(bucket *Bucket, cache Cache, delay int, maxInFlight int) (check 
 					if inflight < maxInFlight {
 						inflight++
 						pendingCandidates[elt.Path] = nil, false
-						fmt.Printf("Q: starting update [%s]\n", elt.Path)
+						//fmt.Printf("Q: starting update [%s]\n", elt.Path)
 						go func(path string) {
 							// perform the actual update
 							err := UpdateFile(bucket, cache, bucket.NewFile(path))
@@ -129,23 +141,25 @@ func StartQueue(bucket *Bucket, cache Cache, delay int, maxInFlight int) (check 
 						}(elt.Path)
 					} else {
 						heap.Push(queue, elt)
-						fmt.Printf("Q: too many updates in flight [%s]\n", elt.Path)
+						//fmt.Printf("Q: too many updates in flight [%s]\n", elt.Path)
 						break
 					}
 				}
 				if queue.Len() == 0 {
-					fmt.Printf("Q: queue empty\n")
+					//fmt.Printf("Q: queue empty\n")
 				}
 
 			case <-finished:
 				// a single update finished
-				fmt.Printf("Q: update finished\n")
+				//fmt.Printf("Q: update finished\n")
 				inflight--
 				if inflight == 0 {
-					fmt.Printf("Q: no more requests in flight\n")
+					//fmt.Printf("Q: no more requests in flight\n")
 				}
 
 			case shutdown = <-quit:
+				// don't bother waiting for the pending sleeper thread (if any)
+				waiting = false
 				// shutdown != nil signals intent to shutdown
 			}
 
@@ -155,12 +169,12 @@ func StartQueue(bucket *Bucket, cache Cache, delay int, maxInFlight int) (check 
 				waiting = true
 				headofqueue := queue.At(0).(*Candidate).Inserted
 				howlong := headofqueue + int64(delay)*1e9 - now
-				fmt.Printf("Q: launching sleeper for %.2f seconds\n", float64(howlong)/1e9)
+				//fmt.Printf("Q: launching sleeper for %.2f seconds\n", float64(howlong)/1e9)
 				go func(pause int64) {
-					if pause > 0 {
+					if pause > 0 && shutdown == nil {
 						time.Sleep(pause)
 					}
-					fmt.Printf("Q: sleeper finished\n")
+					//fmt.Printf("Q: sleeper finished\n")
 					timeout <- true
 				}(howlong)
 			}
