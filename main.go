@@ -50,8 +50,66 @@ func (bucket *Bucket) NewFile(pathname string) (elt *File) {
 }
 
 func main() {
-	key := os.Getenv("AWSACCESSKEYID")
-	secret := os.Getenv("AWSSECRETACCESSKEY")
+	key, secret := getKeys()
+	bucket := NewBucket("static.russross.com", "propolis", "", false, key, secret)
+	bucket.TrustCacheIsComplete = true
+	bucket.TrustCacheIsAccurate = true
+	//bucket.AlwaysHashContents = true
+	//bucket.TrackDirectories = true
+	cache, err := Connect("metadata.sqlite")
+	if err != nil {
+		fmt.Println("Error connecting to database:", err)
+		os.Exit(-1)
+	}
+	defer cache.Close()
+
+	q, end := StartQueue(bucket, cache, 10, 25)
+
+	if len(os.Args) != 2 {
+		fmt.Fprintf(os.Stderr, "Usage: %s <rootdir>\n", os.Args[0])
+		os.Exit(-1)
+	}
+	scan(q, os.Args[1])
+	//prompt(q)
+
+	fmt.Println("Waiting for queue to empty...")
+	done := make(chan bool)
+	end <- done
+	<-done
+	fmt.Println("Quitting")
+}
+
+type Walker chan FileName
+
+func (q Walker) VisitDir(path string, f *os.FileInfo) bool {
+	//q<-FileName{path, true}
+	//fmt.Println("Dir :", path)
+	return true
+}
+
+func (q Walker) VisitFile(path string, f *os.FileInfo) {
+	fmt.Println("File:", path)
+	q <- FileName{path, true}
+}
+
+func scan(q chan FileName, root string) {
+	filepath.Walk(root, Walker(q), nil)
+}
+
+func prompt(q chan FileName) {
+	fmt.Println("Type file names to be synced.  A blank line quits")
+	for {
+		var path string
+		if n, err := fmt.Scanln(&path); n != 1 || err != nil {
+			break
+		}
+		q <- FileName{path, false}
+	}
+}
+
+func getKeys() (key, secret string) {
+	key = os.Getenv("AWSACCESSKEYID")
+	secret = os.Getenv("AWSSECRETACCESSKEY")
 	if key == "" || secret == "" {
 		// try reading from password file
 		fp, err := os.Open(s3_password_file)
@@ -81,30 +139,7 @@ func main() {
 		fmt.Println("AWSSECRETACCESSKEY undefined")
 		os.Exit(-1)
 	}
-
-	bucket := NewBucket("static.russross.com", "propolis", "", false, key, secret)
-	cache, err := Connect("metadata.sqlite")
-	if err != nil {
-		fmt.Println("Error connecting to database:", err)
-		os.Exit(-1)
-	}
-	defer cache.Close()
-
-	q, end := StartQueue(bucket, cache, 10, 25)
-	fmt.Println("Type file names to be synced.  A blank line quits")
-	for {
-		var path string
-		if n, err := fmt.Scanln(&path); n != 1 || err != nil {
-			break
-		}
-		q <- FileName{path, false}
-	}
-
-	fmt.Println("Waiting for queue to empty...")
-	done := make(chan bool)
-	end <- done
-	<-done
-	fmt.Println("Quitting")
+	return
 }
 
 // open a file and compute an md5 hash for its contents
