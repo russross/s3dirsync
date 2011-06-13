@@ -125,3 +125,8 @@ func (db Cache) DeleteFileInfo(elt *File) (err os.Error) {
 	err = db.Exec("DELETE FROM cache WHERE path = ?", elt.ServerPath)
 	return
 }
+
+func (db Cache) ResetFlags() (err os.Error) {
+	err = db.Exec("UPDATE cache SET flag = 0")
+	return
+}

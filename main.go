@@ -12,6 +12,7 @@ import (
 	"crypto/md5"
 	"encoding/base64"
 	"encoding/hex"
+	"flag"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -19,9 +20,14 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"unicode"
 )
 
-const s3_password_file = "/etc/passwd-s3fs"
+const (
+	s3_password_file              = "/etc/passwd-amazon-s3"
+	s3_access_key_id_variable     = "AWSACCESSKEYID"
+	s3_secret_access_key_variable = "AWSSECRETACCESSKEY"
+)
 
 type File struct {
 	LocalPath      string
@@ -50,8 +56,100 @@ func (bucket *Bucket) NewFile(pathname string) (elt *File) {
 }
 
 func main() {
-	key, secret := getKeys()
-	bucket := NewBucket("static.russross.com", "propolis", "", false, key, secret)
+	var refresh, watch, delete, paranoid, practice, public, secure bool
+	flag.BoolVar(&refresh, "refresh", true,
+		"scan the online bucket to update cache at startup")
+	flag.BoolVar(&watch, "watch", true,
+		"go into daemon mode and watch the local file system\n"+
+			"\tfor changes after initial sync")
+	flag.BoolVar(&delete, "delete", true,
+		"delete files as well as updating changed files")
+	flag.BoolVar(&paranoid, "paranoid", false,
+		"always compute md5 hashes of file contents,\n"+
+			"\teven when other metadata matches")
+	flag.BoolVar(&practice, "practice", false,
+		"do a practice run without changing any files\n"+
+			"\t(implies -watch=false)")
+	flag.BoolVar(&public, "public", true,
+		"make world-readable local files publicly readable\n"+
+			"\tin the online bucket")
+	flag.BoolVar(&secure, "secure", false,
+		"use secure connections to Amazon S3")
+
+	var accesskeyid, secretaccesskey string
+	flag.StringVar(&accesskeyid, "accesskeyid", "",
+		"Amazon AWS Access Key ID")
+	flag.StringVar(&secretaccesskey, "secretaccesskey", "",
+		"Amazon AWS Secret Access Key")
+
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr,
+			"Propolis:\n"+
+				"  Amazon S3 <--> local file system synchronizer\n"+
+				"  Synchronizes a local directory with an S3 bucket, then\n"+
+				"  watches the local directory for changes and automatically\n"+
+				"  propogates them to the bucket.\n\n"+
+				"  See http://github.com/russross/propolis for details\n\n"+
+				"Usage:\n"+
+				"  to start by syncing remote bucket to match local file system:\n"+
+				"      %s [flags] local/dir s3:bucket[:remote/dir]\n"+
+				"  to start by syncing local file system to match remote bucket:\n"+
+				"      %s [flags] s3:bucket[:remote/dir] local/dir\n\n"+
+				"  Amazon Access Key ID and Secret Access Key can be specified in\n"+
+				"  one of three ways, listed in decreasing order of precedence.\n"+
+				"  Note: both values must be supplied using a single method:\n\n"+
+				"      1. On the command line\n"+
+				"      2. In the environment variables %s and %s\n"+
+				"      3. In the file %s\n\n"+
+				"Options:\n",
+			os.Args[0], os.Args[0],
+			s3_access_key_id_variable, s3_secret_access_key_variable, s3_password_file)
+		flag.PrintDefaults()
+	}
+	flag.Parse()
+
+	// make sure we get access keys
+	if accesskeyid == "" || secretaccesskey == "" {
+		accesskeyid, secretaccesskey = getKeys()
+	}
+	if accesskeyid == "" || secretaccesskey == "" {
+		fmt.Fprintln(os.Stderr, "Error: Amazon AWS Access Key ID and/or Secret Access Key undefined\n")
+		flag.Usage()
+		os.Exit(-1)
+	}
+
+	// check command-line arguments
+	args := flag.Args()
+	if len(args) != 2 {
+		flag.Usage()
+		os.Exit(-1)
+	}
+
+	// figure out the direction of sync, parse the bucket and directory info
+	var localwins bool
+	var bucketname, bucketprefix, localdir string
+
+	switch {
+	case !strings.HasPrefix(args[0], "s3:") && strings.HasPrefix(args[1], "s3:"):
+		localwins = true
+		localdir = parseLocalDir(args[0])
+		bucketname, bucketprefix = parseBucket(args[1])
+	case strings.HasPrefix(args[0], "s3:") && !strings.HasPrefix(args[1], "s3:"):
+		localwins = false
+		bucketname, bucketprefix = parseBucket(args[0])
+		localdir = parseLocalDir(args[1])
+	default:
+		flag.Usage()
+		os.Exit(-1)
+	}
+
+	if info, err := os.Lstat(localdir); err != nil || !info.IsDirectory() {
+		fmt.Fprintf(os.Stderr, "%s is not a valid directory\n", localdir)
+	}
+
+	fmt.Println("localwins, bucketname, bucketprefix, localdir:", localwins, bucketname, bucketprefix, localdir)
+
+	bucket := NewBucket("static.russross.com", "propolis", "", false, accesskeyid, secretaccesskey)
 	bucket.TrustCacheIsComplete = true
 	bucket.TrustCacheIsAccurate = true
 	//bucket.AlwaysHashContents = true
@@ -93,6 +191,84 @@ func main() {
 	end <- done
 	<-done
 	fmt.Println("Quitting")
+}
+
+func parseBucket(arg string) (name, prefix string) {
+	// sanity check
+	if !strings.HasPrefix(arg, "s3:") {
+		flag.Usage()
+		os.Exit(-1)
+	}
+
+	// split it into bucket and name
+	name = strings.TrimSpace(arg[len("s3:"):])
+	if colon := strings.Index(name, ":"); colon >= 0 {
+		prefix = strings.TrimSpace(name[colon+1:])
+		name = strings.TrimSpace(name[:colon])
+	}
+
+	valid := true
+	defer func() {
+		if !valid {
+			fmt.Fprintln(os.Stdout, "Invalid bucket name")
+			flag.Usage()
+			os.Exit(-1)
+		}
+	}()
+
+	// validate and canonicalize bucket part
+	// from http://docs.amazonwebservices.com/AmazonS3/latest/dev/index.html?BucketRestrictions.html
+	//     bucket names:
+	//     - must be between 3 and 255 characters long
+	if len(name) < 3 || len(name) > 255 {
+		valid = false
+		return
+	}
+
+	//     - can contain lowercase letters, numbers, periods, underscores, and dashes
+	if strings.IndexFunc(name, func(r int) bool {
+		return r != '.' && r != '_' && r != '-' &&
+			(r < 'a' || r > 'z') &&
+			(r < '0' || r > '9')
+	}) >= 0 {
+		valid = false
+		return
+	}
+
+	//     - must start with a number or letter
+	if !unicode.IsDigit(int(name[0])) && !unicode.IsLetter(int(name[0])) {
+		valid = false
+		return
+	}
+
+	//     - must not be formatted as an IP address (e.g., 192.168.5.4)
+	var a, b, c, d, e int
+	if n, _ := fmt.Sscanf(name+"!", "%3d.%3d.%3d.%3d%c", &a, &b, &c, &d, &e); n == 5 {
+		if e == '!' &&
+			a >= 0 && a <= 255 &&
+			b >= 0 && b <= 255 &&
+			c >= 0 && c <= 255 &&
+			d >= 0 && d <= 255 {
+			valid = false
+			return
+		}
+	}
+
+	// validate and canonicalize path part
+	prefix = path.Clean("/" + prefix)
+	return
+}
+
+func parseLocalDir(arg string) string {
+	path, err := filepath.Abs(arg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error while parsing local path %s: %v\n", arg, err)
+	}
+	path, err = filepath.EvalSymlinks(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error while parsing local path %s: %v\n", arg, err)
+	}
+	return path
 }
 
 func dumpList(list *ListBucketResult) {
@@ -137,37 +313,32 @@ func prompt(q chan FileName) {
 }
 
 func getKeys() (key, secret string) {
-	key = os.Getenv("AWSACCESSKEYID")
-	secret = os.Getenv("AWSSECRETACCESSKEY")
-	if key == "" || secret == "" {
-		// try reading from password file
-		fp, err := os.Open(s3_password_file)
-		if err == nil {
-			read := bufio.NewReader(fp)
-			for line, isPrefix, err := read.ReadLine(); err == nil; line, isPrefix, err = read.ReadLine() {
-				s := strings.TrimSpace(string(line))
-				if isPrefix || len(s) == 0 || s[0] == '#' {
-					continue
-				}
-				chunks := strings.Split(s, ":", 2)
-				if len(chunks) != 2 {
-					continue
-				}
-				key = chunks[0]
-				secret = chunks[1]
-				break
+	key = os.Getenv(s3_access_key_id_variable)
+	secret = os.Getenv(s3_secret_access_key_variable)
+	if key != "" && secret != "" {
+		return
+	}
+
+	// try reading from password file
+	fp, err := os.Open(s3_password_file)
+	if err == nil {
+		read := bufio.NewReader(fp)
+		for line, isPrefix, err := read.ReadLine(); err == nil; line, isPrefix, err = read.ReadLine() {
+			s := strings.TrimSpace(string(line))
+			if isPrefix || len(s) == 0 || s[0] == '#' {
+				continue
 			}
-			fp.Close()
+			chunks := strings.Split(s, ":", 2)
+			if len(chunks) != 2 {
+				continue
+			}
+			key = chunks[0]
+			secret = chunks[1]
+			break
 		}
+		fp.Close()
 	}
-	if key == "" {
-		fmt.Println("AWSACCESSKEYID undefined")
-		os.Exit(-1)
-	}
-	if secret == "" {
-		fmt.Println("AWSSECRETACCESSKEY undefined")
-		os.Exit(-1)
-	}
+
 	return
 }
 
