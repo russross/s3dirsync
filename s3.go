@@ -57,24 +57,6 @@ var AWS_HEADERS []string = []string{
 	"X-Amz-Metadata-Directive",
 }
 
-// an S3 bucket
-type Bucket struct {
-	Bucket     string
-	Url        string
-	Secure     bool
-	UrlPrefix  string
-	PathPrefix string
-	Key        string
-	Secret     string
-
-	TrustCacheIsComplete bool
-	TrustCacheIsAccurate bool
-	AlwaysHashContents   bool
-	TrackDirectories     bool
-
-	MimeTypes map[string]string
-}
-
 // results from bucket list requests
 type Contents struct {
 	Key          string
@@ -93,62 +75,20 @@ type ListBucketResult struct {
 	Contents    []Contents
 }
 
-func NewBucket(bucket string, urlprefix string, fsprefix string, secure bool, key string, secret string) *Bucket {
-	// read in a list of MIME types if possible
-	mimes := make(map[string]string)
-	if fp, err := os.Open("/etc/mime.types"); err == nil {
-		defer fp.Close()
-		read := bufio.NewReader(fp)
-		for line, isPrefix, err := read.ReadLine(); err == nil; line, isPrefix, err = read.ReadLine() {
-			s := strings.TrimSpace(string(line))
-			if isPrefix || len(s) < 3 || s[0] == '#' {
-				continue
-			}
-			s = strings.Replace(s, " ", "\t", -1)
-			chunks := strings.Split(s, "\t", -1)
-			if len(chunks) < 2 {
-				continue
-			}
-			kind := chunks[0]
-			for _, ext := range chunks[1:] {
-				if ext != "" {
-					mimes[ext] = kind
-				}
-			}
-		}
-	}
-
-	url := "http://" + bucket
-	if secure {
-		url = "https://" + bucket
-	}
-	url += ".s3.amazonaws.com"
-	return &Bucket{
-		Bucket:     bucket,
-		Url:        url,
-		Secure:     secure,
-		UrlPrefix:  urlprefix,
-		PathPrefix: fsprefix,
-		Key:        key,
-		Secret:     secret,
-		MimeTypes:  mimes,
-	}
-}
-
-func (bucket *Bucket) UploadRequest(elt *File) (err os.Error) {
-	_, err = bucket.SendRequest("PUT", "", elt.UrlPath, elt.Contents, elt.LocalHashBase64, elt.LocalInfo)
+func (p *Propolis) UploadRequest(elt *File) (err os.Error) {
+	_, err = p.SendRequest("PUT", "", elt.UrlPath, elt.Contents, elt.LocalHashBase64, elt.LocalInfo)
 	return
 }
 
 
-func (bucket *Bucket) DeleteRequest(elt *File) (err os.Error) {
-	_, err = bucket.SendRequest("DELETE", "", elt.UrlPath, nil, "", nil)
+func (p *Propolis) DeleteRequest(elt *File) (err os.Error) {
+	_, err = p.SendRequest("DELETE", "", elt.UrlPath, nil, "", nil)
 	return
 }
 
-func (bucket *Bucket) StatRequest(elt *File) (err os.Error) {
+func (p *Propolis) StatRequest(elt *File) (err os.Error) {
 	var resp *http.Response
-	if resp, err = bucket.SendRequest("HEAD", "", elt.UrlPath, nil, "", nil); err != nil {
+	if resp, err = p.SendRequest("HEAD", "", elt.UrlPath, nil, "", nil); err != nil {
 		// we don't consider "not found" an error
 		if resp != nil && resp.StatusCode == 404 {
 			err = nil
@@ -157,29 +97,29 @@ func (bucket *Bucket) StatRequest(elt *File) (err os.Error) {
 	}
 	elt.ServerInfo = new(os.FileInfo)
 	elt.ServerInfo.Name = elt.ServerPath
-	bucket.GetResponseMetaData(resp, elt.ServerInfo)
+	p.GetResponseMetaData(resp, elt.ServerInfo)
 	elt.ServerHashHex = resp.Header.Get("Etag")[1:33]
 	return
 }
 
-func (bucket *Bucket) CopyRequest(elt *File, src string) (err os.Error) {
-	_, err = bucket.SendRequest("PUT", src, elt.UrlPath, nil, "", elt.LocalInfo)
+func (p *Propolis) CopyRequest(elt *File, src string) (err os.Error) {
+	_, err = p.SendRequest("PUT", src, elt.UrlPath, nil, "", elt.LocalInfo)
 	return
 }
 
-func (bucket *Bucket) SetStatRequest(elt *File) (err os.Error) {
-	_, err = bucket.SendRequest("PUT", elt.FullServerPath, elt.UrlPath, nil, "", elt.LocalInfo)
+func (p *Propolis) SetStatRequest(elt *File) (err os.Error) {
+	_, err = p.SendRequest("PUT", elt.FullServerPath, elt.UrlPath, nil, "", elt.LocalInfo)
 	return
 }
 
-func (bucket *Bucket) DownloadRequest(path string, body io.WriteCloser) (info *os.FileInfo, err os.Error) {
+func (p *Propolis) DownloadRequest(path string, body io.WriteCloser) (info *os.FileInfo, err os.Error) {
 	var resp *http.Response
-	if resp, err = bucket.SendRequest("GET", "", path, nil, "", nil); err != nil {
+	if resp, err = p.SendRequest("GET", "", path, nil, "", nil); err != nil {
 		return
 	}
 	info = new(os.FileInfo)
 	info.Name = path
-	bucket.GetResponseMetaData(resp, info)
+	p.GetResponseMetaData(resp, info)
 
 	// download and compute MD5 hash as we go
 	md5hash := md5.New()
@@ -227,7 +167,7 @@ func (bucket *Bucket) DownloadRequest(path string, body io.WriteCloser) (info *o
 	return
 }
 
-func (bucket *Bucket) ListRequest(path string, marker string, maxEntries int, includeAll bool) (listresult *ListBucketResult, err os.Error) {
+func (p *Propolis) ListRequest(path string, marker string, maxEntries int, includeAll bool) (listresult *ListBucketResult, err os.Error) {
 	// set up the query string
 	var prefix string
 
@@ -236,7 +176,7 @@ func (bucket *Bucket) ListRequest(path string, marker string, maxEntries int, in
 		prefix = path[1:] + "/"
 	}
 
-	query := bucket.Url + "/?prefix=" + urlEncode(prefix)
+	query := p.Url + "/?prefix=" + urlEncode(prefix)
 
 	// are we scanning just a single directory or getting everything?
 	if !includeAll {
@@ -253,7 +193,7 @@ func (bucket *Bucket) ListRequest(path string, marker string, maxEntries int, in
 
 	// issue the request
 	var resp *http.Response
-	if resp, err = bucket.SendRequest("GET", "", query, nil, "", nil); err != nil {
+	if resp, err = p.SendRequest("GET", "", query, nil, "", nil); err != nil {
 		return
 	}
 	if resp.Body != nil {
@@ -269,7 +209,7 @@ func (bucket *Bucket) ListRequest(path string, marker string, maxEntries int, in
 	return
 }
 
-func (bucket *Bucket) SetRequestMetaData(req *http.Request, info *os.FileInfo) {
+func (p *Propolis) SetRequestMetaData(req *http.Request, info *os.FileInfo) {
 	// file permissions: grant "public-read" if the file grants world read permission
 	if info.Permission()&s_iroth != 0 {
 		req.Header.Set("X-Amz-Acl", acl_public)
@@ -311,7 +251,7 @@ func (bucket *Bucket) SetRequestMetaData(req *http.Request, info *os.FileInfo) {
 	default:
 		if dot := strings.LastIndex(info.Name, "."); dot >= 0 && dot+1 < len(info.Name) {
 			extension := info.Name[dot+1:]
-			if kind, present := bucket.MimeTypes[extension]; present {
+			if kind, present := p.MimeTypes[extension]; present {
 				mime = kind
 			}
 		}
@@ -319,7 +259,7 @@ func (bucket *Bucket) SetRequestMetaData(req *http.Request, info *os.FileInfo) {
 	req.Header.Set("Content-Type", mime)
 }
 
-func (bucket *Bucket) GetResponseMetaData(resp *http.Response, info *os.FileInfo) {
+func (p *Propolis) GetResponseMetaData(resp *http.Response, info *os.FileInfo) {
 	// get the user id
 	if line := resp.Header.Get("X-Amz-Meta-Uid"); line != "" {
 		var uid int
@@ -417,7 +357,7 @@ func (bucket *Bucket) GetResponseMetaData(resp *http.Response, info *os.FileInfo
 	}
 }
 
-func (bucket *Bucket) SendRequest(method string, src, target string, body io.ReadCloser, hash string, info *os.FileInfo) (resp *http.Response, err os.Error) {
+func (p *Propolis) SendRequest(method string, src, target string, body io.ReadCloser, hash string, info *os.FileInfo) (resp *http.Response, err os.Error) {
 	defer func() {
 		// if anything goes wrong, close the body reader
 		// if it ends normally, this will be closed already and set to nil
@@ -439,7 +379,7 @@ func (bucket *Bucket) SendRequest(method string, src, target string, body io.Rea
 	}
 
 	if info != nil {
-		bucket.SetRequestMetaData(req, info)
+		p.SetRequestMetaData(req, info)
 	}
 
 	// are we uploading a file with a content hash?
@@ -456,7 +396,7 @@ func (bucket *Bucket) SendRequest(method string, src, target string, body io.Rea
 
 	// sign and execute the request
 	// note: 2nd argument is temporary hack to set Content-Length: 0 when needed
-	if resp, err = bucket.SignAndExecute(req, method == "PUT" && body == nil || (info != nil && info.Size == 0)); err != nil {
+	if resp, err = p.SignAndExecute(req, method == "PUT" && body == nil || (info != nil && info.Size == 0)); err != nil {
 		return
 	}
 
@@ -474,13 +414,13 @@ func (bucket *Bucket) SendRequest(method string, src, target string, body io.Rea
 
 // execute a request; date it, sign it, send it
 // note: specialcase is temporary hack to set Content-Length: 0 when needed
-func (bucket *Bucket) SignAndExecute(req *http.Request, specialcase bool) (resp *http.Response, err os.Error) {
+func (p *Propolis) SignAndExecute(req *http.Request, specialcase bool) (resp *http.Response, err os.Error) {
 	// time stamp it
 	date := time.LocalTime().Format(time.RFC1123)
 	req.Header.Set("Date", date)
 
 	// sign the request
-	bucket.SignRequest(req)
+	p.SignRequest(req)
 
 	// open a connection
 	conn, err := net.Dial("tcp", req.URL.Host+":"+req.URL.Scheme)
@@ -513,7 +453,7 @@ func (bucket *Bucket) SignAndExecute(req *http.Request, specialcase bool) (resp 
 	return
 }
 
-func (bucket *Bucket) SignRequest(req *http.Request) {
+func (p *Propolis) SignRequest(req *http.Request) {
 	// gather the string to be signed
 
 	// method
@@ -536,10 +476,10 @@ func (bucket *Bucket) SignRequest(req *http.Request) {
 	}
 
 	// resource: the path components should be URL-encoded, but not the slashes
-	msg += urlEncode("/" + bucket.Bucket + req.URL.Path)
+	msg += urlEncode("/" + p.Bucket + req.URL.Path)
 
 	// create the signature
-	hmac := hmac.NewSHA1([]byte(bucket.Secret))
+	hmac := hmac.NewSHA1([]byte(p.Secret))
 	hmac.Write([]byte(msg))
 
 	// get a base64 encoding of the signature
@@ -549,7 +489,7 @@ func (bucket *Bucket) SignRequest(req *http.Request) {
 	encoder.Close()
 	signature := encoded.String()
 
-	req.Header.Set("Authorization", "AWS "+bucket.Key+":"+signature)
+	req.Header.Set("Authorization", "AWS "+p.Key+":"+signature)
 }
 
 func urlEncode(path string) string {

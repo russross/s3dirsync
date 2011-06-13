@@ -44,9 +44,9 @@ func Connect(filename string) (db Cache, err os.Error) {
 	return
 }
 
-func (db Cache) GetFileInfo(elt *File) (err os.Error) {
+func (p *Propolis) GetFileInfo(elt *File) (err os.Error) {
 	var stmt *sqlite.Stmt
-	stmt, err = db.Prepare("SELECT md5, uid, gid, mode, mtime, size " +
+	stmt, err = p.Db.Prepare("SELECT md5, uid, gid, mode, mtime, size " +
 		"FROM cache WHERE path = ?")
 	if err != nil {
 		return
@@ -69,9 +69,9 @@ func (db Cache) GetFileInfo(elt *File) (err os.Error) {
 	return
 }
 
-func (db Cache) GetPathFromMd5(elt *File) (path string, err os.Error) {
+func (p *Propolis) GetPathFromMd5(elt *File) (path string, err os.Error) {
 	var stmt1, stmt2 *sqlite.Stmt
-	stmt1, err = db.Prepare("SELECT path FROM cache WHERE md5 = ? AND path = ?")
+	stmt1, err = p.Db.Prepare("SELECT path FROM cache WHERE md5 = ? AND path = ?")
 	if err != nil {
 		return
 	}
@@ -83,7 +83,7 @@ func (db Cache) GetPathFromMd5(elt *File) (path string, err os.Error) {
 		// this path has the desired md5 hash
 		return elt.ServerPath, nil
 	}
-	stmt2, err = db.Prepare("SELECT path FROM cache WHERE md5 = ? LIMIT 1")
+	stmt2, err = p.Db.Prepare("SELECT path FROM cache WHERE md5 = ? LIMIT 1")
 	if err != nil {
 		return
 	}
@@ -95,9 +95,9 @@ func (db Cache) GetPathFromMd5(elt *File) (path string, err os.Error) {
 	return
 }
 
-func (db Cache) SetFileInfo(elt *File, uselocal bool) (err os.Error) {
+func (p *Propolis) SetFileInfo(elt *File, uselocal bool) (err os.Error) {
 	// clear old entry if it exists
-	if err = db.DeleteFileInfo(elt); err != nil {
+	if err = p.DeleteFileInfo(elt); err != nil {
 		return
 	}
 
@@ -108,7 +108,7 @@ func (db Cache) SetFileInfo(elt *File, uselocal bool) (err os.Error) {
 		info = elt.ServerInfo
 		hash = elt.ServerHashHex
 	}
-	err = db.Exec("INSERT INTO cache VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+	err = p.Db.Exec("INSERT INTO cache VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
 		info.Name,
 		hash,
 		info.Uid,
@@ -120,13 +120,13 @@ func (db Cache) SetFileInfo(elt *File, uselocal bool) (err os.Error) {
 	return
 }
 
-func (db Cache) DeleteFileInfo(elt *File) (err os.Error) {
+func (p *Propolis) DeleteFileInfo(elt *File) (err os.Error) {
 	// delete entry if it exists
-	err = db.Exec("DELETE FROM cache WHERE path = ?", elt.ServerPath)
+	err = p.Db.Exec("DELETE FROM cache WHERE path = ?", elt.ServerPath)
 	return
 }
 
-func (db Cache) ResetFlags() (err os.Error) {
-	err = db.Exec("UPDATE cache SET flag = 0")
+func (p *Propolis) ResetFlags() (err os.Error) {
+	err = p.Db.Exec("UPDATE cache SET flag = 0")
 	return
 }

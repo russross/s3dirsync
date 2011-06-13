@@ -39,7 +39,7 @@ type FileName struct {
 // the channel, then issues a FileUpdate action on it.
 // At most maxInFlight updates will be launched in parallel, which
 // may delay some requests beyond delay seconds.
-func StartQueue(bucket *Bucket, cache Cache, delay int, maxInFlight int) (check chan FileName, quit chan chan bool) {
+func StartQueue(p *Propolis, delay int, maxInFlight int) (check chan FileName, quit chan chan bool) {
 	// a path coming in on this channel should be checked after a delay
 	check = make(chan FileName)
 
@@ -130,7 +130,7 @@ func StartQueue(bucket *Bucket, cache Cache, delay int, maxInFlight int) (check 
 						//fmt.Printf("Q: starting update [%s]\n", elt.Path)
 						go func(path string) {
 							// perform the actual update
-							err := UpdateFile(bucket, cache, bucket.NewFile(path))
+							err := p.UpdateFile(p.NewFile(path))
 							if err != nil {
 								fmt.Fprintf(os.Stderr, "Error updating [%s]: %v\n", path, err)
 							}
