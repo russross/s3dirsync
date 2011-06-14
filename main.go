@@ -1,8 +1,24 @@
 //
-// Propolis
-// Main driver
-// by Russ Ross <russ@russross.com>
+// Propolis: Amazon S3 <--> local file system synchronizer
+// Copyright © 2011 Russ Ross <russ@russross.com>
 //
+// This file is part of Propolis
+//
+// Propolis is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 2 of the License, or
+// (at your option) any later version.
+// 
+// Propolis is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+// 
+// You should have received a copy of the GNU General Public License
+// along with Propolis.  If not, see <http://www.gnu.org/licenses/>.
+//
+
+// Main startup and configuration code
 
 package main
 
@@ -74,25 +90,28 @@ func (p *Propolis) NewFile(pathname string) (elt *File) {
 func ParseOptions() *Propolis {
 	var refresh, watch, delete, paranoid, practice, public, secure, directories bool
 	flag.BoolVar(&refresh, "refresh", true,
-		"scan the online bucket to update cache at startup")
+		"Scan online bucket to update cache at startup\n"+
+			"\tLonger startup time, but catches changes made while offline")
 	flag.BoolVar(&watch, "watch", true,
-		"go into daemon mode and watch the local file system\n"+
-			"\tfor changes after initial sync")
+		"Go into daemon mode and watch the local file system\n"+
+			"\tfor changes after initial sync (false means sync then quit)")
 	flag.BoolVar(&delete, "delete", true,
-		"delete files as well as updating changed files")
+		"Delete files when syncing as well as copying changed files")
 	flag.BoolVar(&paranoid, "paranoid", false,
-		"always compute md5 hashes of file contents,\n"+
-			"\teven when other metadata matches")
+		"Always verify md5 hash of file contents,\n"+
+			"\teven when all metadata is an exact match (slower)")
 	flag.BoolVar(&practice, "practice", false,
-		"do a practice run without changing any files\n"+
-			"\t(implies -watch=false)")
+		"Do a practice run without changing any files\n"+
+			"\tShows what would be changed (implies -watch=false)")
 	flag.BoolVar(&public, "public", true,
-		"make world-readable local files publicly readable\n"+
-			"\tin the online bucket")
+		"Make world-readable local files publicly readable\n"+
+			"\tin the online bucket (downloadable via the web)")
 	flag.BoolVar(&secure, "secure", false,
-		"use secure connections to Amazon S3")
+		"Use secure connections to Amazon S3\n"+
+			"\tA bit slower, but data is encrypted when being transferred")
 	flag.BoolVar(&directories, "directories", false,
-		"track directories using special zero-length files")
+		"Track directories using special zero-length files\n"+
+			"\tMostly useful for greater compatibility with s3fslite")
 
 	var accesskeyid, secretaccesskey string
 	flag.StringVar(&accesskeyid, "accesskeyid", "",
@@ -108,17 +127,21 @@ func ParseOptions() *Propolis {
 				"  watches the local directory for changes and automatically\n"+
 				"  propogates them to the bucket.\n\n"+
 				"  See http://github.com/russross/propolis for details\n\n"+
+				"  Copyright 2011 by Russ Ross <russ@russross.com>\n\n"+
+				"  Propolis comes with ABSOLUTELY NO WARRANTY.  This is free software, and you\n"+
+				"  are welcome to redistribute it under certain conditions.  See the GNU\n"+
+				"  General Public Licence for details.\n\n"+
 				"Usage:\n"+
-				"  to start by syncing remote bucket to match local file system:\n"+
+				"  To start by syncing remote bucket to match local file system:\n"+
 				"      %s [flags] local/dir s3:bucket[:remote/dir]\n"+
-				"  to start by syncing local file system to match remote bucket:\n"+
+				"  To start by syncing local file system to match remote bucket:\n"+
 				"      %s [flags] s3:bucket[:remote/dir] local/dir\n\n"+
 				"  Amazon Access Key ID and Secret Access Key can be specified in\n"+
 				"  one of three ways, listed in decreasing order of precedence.\n"+
 				"  Note: both values must be supplied using a single method:\n\n"+
 				"      1. On the command line\n"+
 				"      2. In the environment variables %s and %s\n"+
-				"      3. In the file %s\n\n"+
+				"      3. In the file %s as key:secret on a single line\n\n"+
 				"Options:\n",
 			os.Args[0], os.Args[0],
 			s3_access_key_id_variable, s3_secret_access_key_variable, s3_password_file)

@@ -1,8 +1,24 @@
 //
-// Propolis
-// Cache of file metadata
-// by Russ Ross <russ@russross.com>
+// Propolis: Amazon S3 <--> local file system synchronizer
+// Copyright © 2011 Russ Ross <russ@russross.com>
 //
+// This file is part of Propolis
+//
+// Propolis is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 2 of the License, or
+// (at your option) any later version.
+// 
+// Propolis is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+// 
+// You should have received a copy of the GNU General Public License
+// along with Propolis.  If not, see <http://www.gnu.org/licenses/>.
+//
+
+// Cache of file metadata
 
 package main
 
