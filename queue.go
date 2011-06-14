@@ -31,9 +31,10 @@ import (
 )
 
 type Candidate struct {
-	Path     string
+	Name     string
 	Inserted int64
 	Updated  int64
+	Push     bool
 }
 
 type Queue struct {
@@ -47,6 +48,7 @@ func (q *Queue) Less(i, j int) bool {
 type FileName struct {
 	Name      string
 	Immediate bool
+	Push      bool
 }
 
 // Start the main queue loop. The channel that is returned
@@ -87,6 +89,7 @@ func StartQueue(p *Propolis, delay int, maxInFlight int) (check chan FileName, q
 			select {
 			case fn := <-check:
 				path := fn.Name
+				push := fn.Push
 				immediate := fn.Immediate
 				//fmt.Printf("Q: incoming request [%s]\n", path)
 
@@ -97,10 +100,11 @@ func StartQueue(p *Propolis, delay int, maxInFlight int) (check chan FileName, q
 				if elt, present := pendingCandidates[path]; present {
 					// touch an existing entry
 					elt.Updated = now
+					elt.Push = push
 					//fmt.Printf("Q: pending candidate touched [%s]\n", path)
 				} else {
 					// new entry
-					elt := &Candidate{path, now, now}
+					elt := &Candidate{path, now, now, push}
 					if immediate {
 						// move this request back in time
 						elt.Inserted -= int64(delay) * 1e9
@@ -128,25 +132,25 @@ func StartQueue(p *Propolis, delay int, maxInFlight int) (check chan FileName, q
 					if elt.Inserted != elt.Updated {
 						elt.Inserted = elt.Updated
 						heap.Push(queue, elt)
-						//fmt.Printf("Q: touched candidate requeued [%s]\n", elt.Path)
+						//fmt.Printf("Q: touched candidate requeued [%s]\n", elt.Name)
 						continue
 					}
 
 					// has the delay been long enough?
 					if now-elt.Inserted < int64(delay)*1e9 && shutdown == nil {
 						heap.Push(queue, elt)
-						//fmt.Printf("Q: oldest entry not old enough [%s]\n", elt.Path)
+						//fmt.Printf("Q: oldest entry not old enough [%s]\n", elt.Name)
 						break
 					}
 
 					// is there room for an update right now?
 					if inflight < maxInFlight {
 						inflight++
-						pendingCandidates[elt.Path] = nil, false
-						//fmt.Printf("Q: starting update [%s]\n", elt.Path)
-						go func(path string) {
+						pendingCandidates[elt.Name] = nil, false
+						//fmt.Printf("Q: starting update [%s]\n", elt.Name)
+						go func(path string, push bool) {
 							// perform the actual update
-							err := p.UpdateFile(p.NewFile(path))
+							err := p.UpdateFile(p.NewFile(path, push))
 							if err != nil {
 								fmt.Fprintf(os.Stderr, "Error updating [%s]: %v\n", path, err)
 							}
@@ -154,10 +158,10 @@ func StartQueue(p *Propolis, delay int, maxInFlight int) (check chan FileName, q
 							// signal that this update is finished
 							// so another can begin
 							finished <- true
-						}(elt.Path)
+						}(elt.Name, elt.Push)
 					} else {
 						heap.Push(queue, elt)
-						//fmt.Printf("Q: too many updates in flight [%s]\n", elt.Path)
+						//fmt.Printf("Q: too many updates in flight [%s]\n", elt.Name)
 						break
 					}
 				}

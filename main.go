@@ -44,22 +44,23 @@ const (
 
 // configuration and state for an active propolis instance
 type Propolis struct {
-	Bucket     string
-	Url        string
-	Secure     bool
-	UrlPrefix  string
-	PathPrefix string
-	Key        string
-	Secret     string
+	Bucket string // bucket name
+	Url    string // s3 bucket access url
+	Secure bool   // use https
+	Key    string // Amazon AWS access key
+	Secret string // Amazon AWS secret key
 
-	Refresh     bool
-	TrustCache  bool
-	Paranoid    bool
-	Directories bool
+	BucketRoot string // s3 bucket root directory
+	LocalRoot  string // local file system root directory
 
-	MimeTypes map[string]string
+	Refresh     bool // download list from s3 to refresh cache
+	Paranoid    bool // always compute md5 hashes
+	Directories bool // track directories on s3 with zero-length files
+	Practice    bool // do not actually make any changes
 
-	Db Cache
+	MimeTypes map[string]string // file extensions -> MIME type
+
+	Db Cache // cache database connection
 }
 
 type File struct {
@@ -67,24 +68,27 @@ type File struct {
 	ServerPath     string
 	FullServerPath string
 	UrlPath        string
+	Push           bool
 
-	LocalInfo  *os.FileInfo
-	ServerInfo *os.FileInfo
+	LocalInfo     *os.FileInfo // metadata found locally
+	ServerInfo    *os.FileInfo // metadata found in cache
+	ServerPartial bool         // cached metadata is incomplete
 
-	LocalHashHex    string
-	LocalHashBase64 string
-	ServerHashHex   string
+	LocalHashHex    string // md5 hash of local file in hex
+	LocalHashBase64 string // md5 hash of local file in base64
+	ServerHashHex   string // md5 hash of remote file in hex
 
 	Contents io.ReadCloser
 }
 
-func (p *Propolis) NewFile(pathname string) (elt *File) {
+func (p *Propolis) NewFile(pathname string, push bool) (elt *File) {
 	// form all the different file name variations we need
 	elt = new(File)
-	elt.LocalPath = filepath.Join(p.PathPrefix, pathname)
-	elt.ServerPath = path.Join("/", p.UrlPrefix, pathname)
+	elt.LocalPath = filepath.Join(p.LocalRoot, pathname)
+	elt.ServerPath = path.Join("/", p.BucketRoot, pathname)
 	elt.FullServerPath = path.Join("/", p.Bucket, elt.ServerPath)
 	elt.UrlPath = p.Url + elt.ServerPath
+	elt.Push = push
 	return
 }
 
@@ -171,31 +175,30 @@ func ParseOptions() *Propolis {
 	}
 
 	// figure out the direction of sync, parse the bucket and directory info
-	var localwins bool
+	var push bool
 	var bucketname, bucketprefix, localdir string
 
 	switch {
 	case !strings.HasPrefix(args[0], "s3:") && strings.HasPrefix(args[1], "s3:"):
-		localwins = true
+		push = true
 		localdir = parseLocalDir(args[0])
 		bucketname, bucketprefix = parseBucket(args[1])
 	case strings.HasPrefix(args[0], "s3:") && !strings.HasPrefix(args[1], "s3:"):
-		localwins = false
+		push = false
 		bucketname, bucketprefix = parseBucket(args[0])
 		localdir = parseLocalDir(args[1])
 	default:
 		flag.Usage()
 		os.Exit(-1)
 	}
+	fmt.Println("push:", push)
 
+	// make sure the root directory exists
 	if info, err := os.Lstat(localdir); err != nil || !info.IsDirectory() {
 		fmt.Fprintf(os.Stderr, "%s is not a valid directory\n", localdir)
 	}
 
-	fmt.Println("localwins, bucketname, bucketprefix, localdir:", localwins, bucketname, bucketprefix, localdir)
-
-	mimes := ReadMimeTypes()
-
+	// open the database
 	var err os.Error
 	var cache Cache
 	if cache, err = Connect(cache_location); err != nil {
@@ -203,13 +206,32 @@ func ParseOptions() *Propolis {
 		os.Exit(-1)
 	}
 
-	p := New(bucketname, bucketprefix, localdir, secure, accesskeyid, secretaccesskey, mimes, cache)
-	p.Refresh = refresh
-	p.TrustCache = true
-	p.Paranoid = paranoid
-	p.Directories = directories
+	// create the Propolis object
+	url := "http://"
+	if secure {
+		url = "https://"
+	}
+	url += bucketname + ".s3.amazonaws.com"
 
-	return p
+	return &Propolis{
+		Bucket: bucketname,
+		Url:    url,
+		Secure: secure,
+		Key:    accesskeyid,
+		Secret: secretaccesskey,
+
+		BucketRoot: bucketprefix,
+		LocalRoot:  localdir,
+
+		Refresh:     refresh,
+		Paranoid:    paranoid,
+		Directories: directories,
+		Practice:    practice,
+
+		MimeTypes: ReadMimeTypes(),
+
+		Db: cache,
+	}
 }
 
 func ReadMimeTypes() (mimes map[string]string) {
@@ -378,7 +400,7 @@ func (q Walker) VisitDir(path string, f *os.FileInfo) bool {
 
 func (q Walker) VisitFile(path string, f *os.FileInfo) {
 	fmt.Println("File:", path)
-	q <- FileName{path, true}
+	q <- FileName{path, true, true}
 }
 
 func scan(q chan FileName, root string) {
@@ -392,7 +414,7 @@ func prompt(q chan FileName) {
 		if n, err := fmt.Scanln(&path); n != 1 || err != nil {
 			break
 		}
-		q <- FileName{path, false}
+		q <- FileName{path, false, true}
 	}
 }
 
@@ -424,22 +446,4 @@ func getKeys() (key, secret string) {
 	}
 
 	return
-}
-
-func New(bucket string, urlprefix string, fsprefix string, secure bool, key string, secret string, mimes map[string]string, cache Cache) *Propolis {
-	url := "http://" + bucket
-	if secure {
-		url = "https://" + bucket
-	}
-	url += ".s3.amazonaws.com"
-	return &Propolis{
-		Bucket:     bucket,
-		Url:        url,
-		Secure:     secure,
-		UrlPrefix:  urlprefix,
-		PathPrefix: fsprefix,
-		Key:        key,
-		Secret:     secret,
-		MimeTypes:  mimes,
-	}
 }
