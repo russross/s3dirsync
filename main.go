@@ -39,6 +39,7 @@ const (
 	s3_access_key_id_variable     = "AWSACCESSKEYID"
 	s3_secret_access_key_variable = "AWSSECRETACCESSKEY"
 	mime_types_file               = "/etc/mime.types"
+	default_cache_location        = "/var/cache/propolis/cache.sqlite"
 )
 
 // configuration and state for an active propolis instance
@@ -113,11 +114,14 @@ func ParseOptions() *Propolis {
 		"Track directories using special zero-length files\n"+
 			"\tMostly useful for greater compatibility with s3fslite")
 
-	var accesskeyid, secretaccesskey string
+	var accesskeyid, secretaccesskey, cache_location string
 	flag.StringVar(&accesskeyid, "accesskeyid", "",
 		"Amazon AWS Access Key ID")
 	flag.StringVar(&secretaccesskey, "secretaccesskey", "",
 		"Amazon AWS Secret Access Key")
+	flag.StringVar(&cache_location, "cache", default_cache_location,
+		"Metadata cache location\n"+
+			"\tA sqlite3 database file that caches online metadata")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr,
@@ -194,7 +198,7 @@ func ParseOptions() *Propolis {
 
 	var err os.Error
 	var cache Cache
-	if cache, err = Connect("metadata.sqlite"); err != nil {
+	if cache, err = Connect(cache_location); err != nil {
 		fmt.Println("Error connecting to database:", err)
 		os.Exit(-1)
 	}
