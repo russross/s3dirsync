@@ -45,7 +45,6 @@ func Connect(filename string) (db Cache, err os.Error) {
 		"    mode INTEGER,\n" +
 		"    mtime INTEGER,\n" +
 		"    size INTEGER,\n" +
-		"    flag INTEGER,\n" +
 		"    PRIMARY KEY (path)\n" +
 		")\n")
 	if err != nil {
@@ -124,15 +123,14 @@ func (p *Propolis) SetFileInfo(elt *File, uselocal bool) (err os.Error) {
 		info = elt.ServerInfo
 		hash = elt.ServerHashHex
 	}
-	err = p.Db.Exec("INSERT INTO cache VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+	err = p.Db.Exec("INSERT INTO cache VALUES (?, ?, ?, ?, ?, ?, ?)",
 		info.Name,
 		hash,
 		info.Uid,
 		info.Gid,
 		info.Mode,
 		info.Mtime_ns,
-		info.Size,
-		0)
+		info.Size)
 	return
 }
 
@@ -142,7 +140,8 @@ func (p *Propolis) DeleteFileInfo(elt *File) (err os.Error) {
 	return
 }
 
-func (p *Propolis) ResetFlags() (err os.Error) {
-	err = p.Db.Exec("UPDATE cache SET flag = 0")
+func (p *Propolis) ResetCache() (err os.Error) {
+	// clear all cache entries
+	err = p.Db.Exec("DELETE FROM cache")
 	return
 }

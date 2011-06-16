@@ -114,7 +114,8 @@ func (p *Propolis) StatRequest(elt *File) (err os.Error) {
 	elt.ServerInfo = new(os.FileInfo)
 	elt.ServerInfo.Name = elt.ServerPath
 	p.GetResponseMetaData(resp, elt.ServerInfo)
-	elt.ServerHashHex = resp.Header.Get("Etag")[1:33]
+	etag := resp.Header.Get("Etag")
+	elt.ServerHashHex = etag[1 : len(etag)-1]
 	return
 }
 
@@ -188,8 +189,8 @@ func (p *Propolis) ListRequest(path string, marker string, maxEntries int, inclu
 	var prefix string
 
 	// are we scanning a subdirectory or starting at the root?
-	if path != "/" {
-		prefix = path[1:] + "/"
+	if path != "" {
+		prefix = path + "/"
 	}
 
 	query := p.Url + "/?prefix=" + urlEncode(prefix)

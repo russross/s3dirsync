@@ -26,7 +26,6 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
-	"io"
 	"os"
 	"path"
 	"path/filepath"
@@ -40,6 +39,7 @@ const (
 	s3_secret_access_key_variable = "AWSSECRETACCESSKEY"
 	mime_types_file               = "/etc/mime.types"
 	default_cache_location        = "/var/cache/propolis/cache.sqlite"
+	list_request_size             = 256
 )
 
 // configuration and state for an active propolis instance
@@ -55,45 +55,20 @@ type Propolis struct {
 
 	Refresh     bool // download list from s3 to refresh cache
 	Paranoid    bool // always compute md5 hashes
+	Reset       bool // reset the cache before starting
 	Directories bool // track directories on s3 with zero-length files
 	Practice    bool // do not actually make any changes
 
 	MimeTypes map[string]string // file extensions -> MIME type
 
 	Db Cache // cache database connection
+
+	Catalog    map[string]*ServerFileInfo
+	ByContents map[string][]*ServerFileInfo
 }
 
-type File struct {
-	LocalPath      string
-	ServerPath     string
-	FullServerPath string
-	UrlPath        string
-	Push           bool
-
-	LocalInfo     *os.FileInfo // metadata found locally
-	ServerInfo    *os.FileInfo // metadata found in cache
-	ServerPartial bool         // cached metadata is incomplete
-
-	LocalHashHex    string // md5 hash of local file in hex
-	LocalHashBase64 string // md5 hash of local file in base64
-	ServerHashHex   string // md5 hash of remote file in hex
-
-	Contents io.ReadCloser
-}
-
-func (p *Propolis) NewFile(pathname string, push bool) (elt *File) {
-	// form all the different file name variations we need
-	elt = new(File)
-	elt.LocalPath = filepath.Join(p.LocalRoot, pathname)
-	elt.ServerPath = path.Join("/", p.BucketRoot, pathname)
-	elt.FullServerPath = path.Join("/", p.Bucket, elt.ServerPath)
-	elt.UrlPath = p.Url + elt.ServerPath
-	elt.Push = push
-	return
-}
-
-func ParseOptions() *Propolis {
-	var refresh, watch, delete, paranoid, practice, public, secure, directories bool
+func Setup() (p *Propolis, push bool) {
+	var refresh, watch, delete, paranoid, reset, practice, public, secure, directories bool
 	flag.BoolVar(&refresh, "refresh", true,
 		"Scan online bucket to update cache at startup\n"+
 			"\tLonger startup time, but catches changes made while offline")
@@ -105,6 +80,8 @@ func ParseOptions() *Propolis {
 	flag.BoolVar(&paranoid, "paranoid", false,
 		"Always verify md5 hash of file contents,\n"+
 			"\teven when all metadata is an exact match (slower)")
+	flag.BoolVar(&reset, "reset", false,
+		"Reset the cache (implies -refresh=true)")
 	flag.BoolVar(&practice, "practice", false,
 		"Do a practice run without changing any files\n"+
 			"\tShows what would be changed (implies -watch=false)")
@@ -157,6 +134,14 @@ func ParseOptions() *Propolis {
 	}
 	flag.Parse()
 
+	// enforce certain option combinations
+	if reset {
+		refresh = true
+	}
+	if practice {
+		watch = false
+	}
+
 	// make sure we get access keys
 	if accesskeyid == "" || secretaccesskey == "" {
 		accesskeyid, secretaccesskey = getKeys()
@@ -175,7 +160,6 @@ func ParseOptions() *Propolis {
 	}
 
 	// figure out the direction of sync, parse the bucket and directory info
-	var push bool
 	var bucketname, bucketprefix, localdir string
 
 	switch {
@@ -191,7 +175,6 @@ func ParseOptions() *Propolis {
 		flag.Usage()
 		os.Exit(-1)
 	}
-	fmt.Println("push:", push)
 
 	// make sure the root directory exists
 	if info, err := os.Lstat(localdir); err != nil || !info.IsDirectory() {
@@ -213,7 +196,7 @@ func ParseOptions() *Propolis {
 	}
 	url += bucketname + ".s3.amazonaws.com"
 
-	return &Propolis{
+	p = &Propolis{
 		Bucket: bucketname,
 		Url:    url,
 		Secure: secure,
@@ -225,6 +208,7 @@ func ParseOptions() *Propolis {
 
 		Refresh:     refresh,
 		Paranoid:    paranoid,
+		Reset:       reset,
 		Directories: directories,
 		Practice:    practice,
 
@@ -232,6 +216,7 @@ func ParseOptions() *Propolis {
 
 		Db: cache,
 	}
+	return
 }
 
 func ReadMimeTypes() (mimes map[string]string) {
@@ -263,8 +248,25 @@ func ReadMimeTypes() (mimes map[string]string) {
 
 func main() {
 	// this exits if there is a problem, so no error checking needed
-	p := ParseOptions()
+	p, push := Setup()
 	defer p.Db.Close()
+
+	if p.Reset {
+		if err := p.ResetCache(); err != nil {
+			fmt.Fprintln(os.Stderr, "Error reseting cache:", err)
+			os.Exit(-1)
+		}
+	}
+
+	if p.Refresh {
+		catalog, bycontents, err := p.ScanServer(push)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Error in refresh scan:", err)
+			os.Exit(-1)
+		}
+		p.Catalog = catalog
+		p.ByContents = bycontents
+	}
 
 	//	fmt.Println("Issuing a list request")
 	//	finished := false
@@ -361,7 +363,7 @@ func parseBucket(arg string) (name, prefix string) {
 	}
 
 	// validate and canonicalize path part
-	prefix = path.Clean("/" + prefix)
+	prefix = path.Clean("/" + prefix)[1:]
 	return
 }
 
