@@ -64,7 +64,7 @@ type Propolis struct {
 	Db Cache // cache database connection
 
 	Catalog    map[string]*ServerFileInfo
-	ByContents map[string][]*ServerFileInfo
+	ByContents map[string]*ServerFileInfo
 }
 
 func Setup() (p *Propolis, push bool) {

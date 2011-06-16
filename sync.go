@@ -348,9 +348,20 @@ func (p *Propolis) UploadFile(elt *File) (err os.Error) {
 	default:
 		// look for another file with the same contents
 		// so we can do a server-to-server copy
-		if src, err = p.GetPathFromMd5(elt); err != nil {
-			elt.Contents.Close()
-			return
+
+		// try the scan results first
+		if p.Refresh && p.ByContents != nil {
+			if entry, present := p.ByContents[elt.LocalHashHex]; present && entry.Size == elt.LocalInfo.Size {
+				src = entry.Name
+			}
+		}
+
+		// try the cache
+		if src == "" {
+			if src, err = p.GetPathFromMd5(elt); err != nil {
+				elt.Contents.Close()
+				return
+			}
 		}
 	}
 
@@ -412,10 +423,10 @@ type ServerFileInfo struct {
 	Size    int64
 }
 
-func (p *Propolis) ScanServer(push bool) (catalog map[string]*ServerFileInfo, bycontents map[string][]*ServerFileInfo, err os.Error) {
+func (p *Propolis) ScanServer(push bool) (catalog map[string]*ServerFileInfo, bycontents map[string]*ServerFileInfo, err os.Error) {
 	// scan the entire server directory
 	catalog = make(map[string]*ServerFileInfo)
-	bycontents = make(map[string][]*ServerFileInfo)
+	bycontents = make(map[string]*ServerFileInfo)
 
 	marker := ""
 	truncated := true
@@ -458,7 +469,7 @@ func (p *Propolis) ScanServer(push bool) (catalog map[string]*ServerFileInfo, by
 
 			// track all non-empty files by content hash
 			if hash != empty_file_md5_hash {
-				bycontents[hash] = append(bycontents[hash], info)
+				bycontents[hash] = info
 			}
 		}
 	}
