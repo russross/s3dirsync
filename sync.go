@@ -67,7 +67,7 @@ func (p *Propolis) NewFile(pathname string, push bool) (elt *File) {
 	return
 }
 
-func (p *Propolis) UpdateFile(elt *File) (err os.Error) {
+func (p *Propolis) SyncFile(elt *File) (err os.Error) {
 	// see what is in the local file system
 	var er os.Error
 	elt.LocalInfo, er = os.Lstat(elt.LocalPath)
@@ -78,97 +78,114 @@ func (p *Propolis) UpdateFile(elt *File) (err os.Error) {
 	}
 
 	// see what is on the server
-	if err = p.GetServerInfo(elt); err != nil {
+	if err = p.LstatServer(elt); err != nil {
 		return
 	}
 
-	// now compare
-	switch {
-	case elt.LocalInfo == nil && elt.ServerInfo == nil:
+	// decide if anything needs updating
+	if elt.LocalInfo == nil && elt.ServerInfo == nil {
 		// nothing to do
 		fmt.Printf("No such file locally or on server [%s]\n", elt.ServerPath)
+		return
+	}
 
-	case elt.Push && elt.LocalInfo == nil && elt.ServerInfo != nil:
-		// delete the remote file
-		fmt.Printf("Deleting remote file [%s]\n", elt.ServerPath)
-		if p.Practice {
-			return
-		}
-
-		// delete the file before the metadata: if something goes wrong, the
-		// delete request will be repeated on reload, but that's better than
-		// leaving a dead file on the server and forgetting about it
-		if err = p.DeleteRequest(elt); err != nil {
-			return
-		}
-		// delete the cache entry
-		if err = p.DeleteFileInfo(elt); err != nil {
-			return
-		}
-
-	case !elt.Push && elt.LocalInfo != nil && elt.ServerInfo == nil:
-		// delete the local file
-		fmt.Printf("Deleting local file [%s]\n", elt.ServerPath)
-		if p.Practice {
-			return
-		}
-
-		if err = os.Remove(elt.LocalPath); err != nil {
-			return
-		}
-
-	case elt.Push &&
-		(elt.LocalInfo != nil && elt.ServerInfo == nil ||
-			elt.LocalInfo.Mode != elt.ServerInfo.Mode ||
-			elt.LocalInfo.Uid != elt.ServerInfo.Uid ||
-			elt.LocalInfo.Gid != elt.ServerInfo.Gid ||
-			elt.LocalInfo.Size != elt.ServerInfo.Size ||
-			elt.LocalInfo.Mtime_ns != elt.ServerInfo.Mtime_ns):
-		// remote update needed
-
-		err = p.UpdateServer(elt)
-
-	case !elt.Push &&
-		(elt.LocalInfo == nil && elt.ServerInfo != nil ||
-			elt.LocalInfo.Mode != elt.ServerInfo.Mode ||
-			elt.LocalInfo.Uid != elt.ServerInfo.Uid ||
-			elt.LocalInfo.Gid != elt.ServerInfo.Gid ||
-			elt.LocalInfo.Size != elt.ServerInfo.Size ||
-			elt.LocalInfo.Mtime_ns != elt.ServerInfo.Mtime_ns):
-		// local update needed
-
-		err = p.UpdateLocal(elt)
-
-	case p.Paranoid:
-		// check md5sum for a match
-		if err = p.GetMd5(elt); err != nil {
-			return
-		}
-
-		// upload if different
-		if elt.LocalHashHex != elt.ServerHashHex {
-			if elt.Push {
-				fmt.Printf("MD5 mismatch, uploading [%s]\n", elt.ServerPath)
-				if err = p.UpdateServer(elt); err != nil {
-					return
-				}
-			} else {
-				elt.Contents.Close()
-				fmt.Printf("MD5 mismatch, downloading [%s]\n", elt.ServerPath)
-				if err = p.UpdateLocal(elt); err != nil {
-					return
-				}
+	if elt.Push {
+		switch {
+		case elt.LocalInfo == nil && elt.ServerInfo != nil:
+			// delete the remote file
+			fmt.Printf("Deleting remote file [%s]\n", elt.ServerPath)
+			if p.Practice {
+				return
 			}
-		} else {
-			fmt.Printf("No change [%s]\n", elt.ServerPath)
+
+			// delete the file before the metadata: if something goes wrong, the
+			// delete request will be repeated on reload, but that's better than
+			// leaving a dead file on the server and forgetting about it
+			if err = p.DeleteRequest(elt); err != nil {
+				return
+			}
+			// delete the cache entry
+			if err = p.DeleteFileInfo(elt); err != nil {
+				return
+			}
+
+		case (elt.LocalInfo != nil && elt.ServerInfo == nil ||
+			elt.LocalInfo.Mode != elt.ServerInfo.Mode ||
+			elt.LocalInfo.Uid != elt.ServerInfo.Uid ||
+			elt.LocalInfo.Gid != elt.ServerInfo.Gid ||
+			elt.LocalInfo.Size != elt.ServerInfo.Size ||
+			elt.LocalInfo.Mtime_ns != elt.ServerInfo.Mtime_ns):
+			// remote update needed
+
+			err = p.UploadFile(elt)
+
+		case p.Paranoid:
+			// compute the local md5 hash
+			if err = p.GetMd5(elt); err != nil {
+				return
+			}
+
+			// do they match?
+			if elt.LocalHashHex == elt.ServerHashHex {
+				fmt.Printf("No change [%s]\n", elt.ServerPath)
+				elt.Contents.Close()
+				return
+			}
+
+			fmt.Printf("MD5 mismatch, uploading [%s]\n", elt.ServerPath)
+			if err = p.UploadFile(elt); err != nil {
+				return
+			}
+		}
+	} else {
+		// this is a pull request
+		switch {
+		case elt.LocalInfo != nil && elt.ServerInfo == nil:
+			// delete the local file
+			fmt.Printf("Deleting local file [%s]\n", elt.ServerPath)
+			if p.Practice {
+				return
+			}
+
+			if err = os.Remove(elt.LocalPath); err != nil {
+				return
+			}
+
+		case (elt.LocalInfo == nil && elt.ServerInfo != nil ||
+			elt.LocalInfo.Mode != elt.ServerInfo.Mode ||
+			elt.LocalInfo.Uid != elt.ServerInfo.Uid ||
+			elt.LocalInfo.Gid != elt.ServerInfo.Gid ||
+			elt.LocalInfo.Size != elt.ServerInfo.Size ||
+			elt.LocalInfo.Mtime_ns != elt.ServerInfo.Mtime_ns):
+			// local update needed
+
+			err = p.DownloadFile(elt)
+
+		case p.Paranoid:
+			// compute the local md5 hash
+			if err = p.GetMd5(elt); err != nil {
+				return
+			}
 			elt.Contents.Close()
+
+			// do they match?
+			if elt.LocalHashHex == elt.ServerHashHex {
+				fmt.Printf("No change [%s]\n", elt.ServerPath)
+				return
+			}
+
+			// download if different
+			fmt.Printf("MD5 mismatch, downloading [%s]\n", elt.ServerPath)
+			if err = p.DownloadFile(elt); err != nil {
+				return
+			}
 		}
 	}
 
 	return
 }
 
-func (p *Propolis) GetServerInfo(elt *File) (err os.Error) {
+func (p *Propolis) LstatServer(elt *File) (err os.Error) {
 	// check the cache
 	if err = p.GetFileInfo(elt); err != nil {
 		return
@@ -267,7 +284,7 @@ func (p *Propolis) GetMd5(elt *File) (err os.Error) {
 	return
 }
 
-func (p *Propolis) UpdateServer(elt *File) (err os.Error) {
+func (p *Propolis) UploadFile(elt *File) (err os.Error) {
 	// clear cache entry first: if something fails, the update
 	// will be repeated on restart
 	if elt.ServerInfo != nil {
@@ -375,7 +392,7 @@ func (p *Propolis) UpdateServer(elt *File) (err os.Error) {
 	return
 }
 
-func (p *Propolis) UpdateLocal(elt *File) (err os.Error) {
+func (p *Propolis) DownloadFile(elt *File) (err os.Error) {
 	// make sure the directory containing this file exists
 
 	// empty files are a special case: no need to download or compute md5

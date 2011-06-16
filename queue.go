@@ -150,7 +150,7 @@ func StartQueue(p *Propolis, delay int, maxInFlight int) (check chan FileName, q
 						//fmt.Printf("Q: starting update [%s]\n", elt.Name)
 						go func(path string, push bool) {
 							// perform the actual update
-							err := p.UpdateFile(p.NewFile(path, push))
+							err := p.SyncFile(p.NewFile(path, push))
 							if err != nil {
 								fmt.Fprintf(os.Stderr, "Error updating [%s]: %v\n", path, err)
 							}
