@@ -70,17 +70,17 @@ func (p *Propolis) GetFileInfo(elt *File) (err os.Error) {
 	if err = stmt.Exec(elt.ServerPath); err != nil || !stmt.Next() {
 		return
 	}
-	elt.ServerInfo = new(os.FileInfo)
-	elt.ServerInfo.Name = elt.ServerPath
+	elt.CacheInfo = new(os.FileInfo)
+	elt.CacheInfo.Name = elt.ServerPath
 	var mode int64
 	err = stmt.Scan(
-		&elt.ServerHashHex,
-		&elt.ServerInfo.Uid,
-		&elt.ServerInfo.Gid,
+		&elt.CacheHashHex,
+		&elt.CacheInfo.Uid,
+		&elt.CacheInfo.Gid,
 		&mode,
-		&elt.ServerInfo.Mtime_ns,
-		&elt.ServerInfo.Size)
-	elt.ServerInfo.Mode = uint32(mode)
+		&elt.CacheInfo.Mtime_ns,
+		&elt.CacheInfo.Size)
+	elt.CacheInfo.Mode = uint32(mode)
 	return
 }
 
@@ -120,11 +120,11 @@ func (p *Propolis) SetFileInfo(elt *File, uselocal bool) (err os.Error) {
 	info := elt.LocalInfo
 	hash := elt.LocalHashHex
 	if !uselocal {
-		info = elt.ServerInfo
+		info = elt.CacheInfo
 		hash = elt.ServerHashHex
 	}
 	err = p.Db.Exec("INSERT INTO cache VALUES (?, ?, ?, ?, ?, ?, ?)",
-		info.Name,
+		elt.ServerPath,
 		hash,
 		info.Uid,
 		info.Gid,
@@ -143,5 +143,82 @@ func (p *Propolis) DeleteFileInfo(elt *File) (err os.Error) {
 func (p *Propolis) ResetCache() (err os.Error) {
 	// clear all cache entries
 	err = p.Db.Exec("DELETE FROM cache")
+	return
+}
+
+func (p *Propolis) ScanCache(push bool) (err os.Error) {
+	// scan the entire cache
+	var stmt *sqlite.Stmt
+	stmt, err = p.Db.Prepare("SELECT * FROM cache")
+	if err != nil {
+		return
+	}
+	defer stmt.Finalize()
+	if err = stmt.Exec(); err != nil {
+		return
+	}
+
+	// read the results
+	for stmt.Next() {
+		info := new(os.FileInfo)
+		var mode int64
+		var hashHex string
+		err = stmt.Scan(
+			&info.Name,
+			&hashHex,
+			&info.Uid,
+			&info.Gid,
+			&mode,
+			&info.Mtime_ns,
+			&info.Size)
+		if err != nil {
+			return
+		}
+		info.Mode = uint32(mode)
+
+		// see if we have a matching entry already
+		var elt *File
+		var present bool
+		if elt, present = p.Catalog[info.Name]; !present {
+			elt = p.NewFileServer(info.Name, push)
+		}
+		elt.CacheInfo = info
+		elt.CacheHashHex = hashHex
+
+		// store the result (if it's not already there)
+		p.Catalog[info.Name] = elt
+	}
+	return
+}
+
+func (p *Propolis) AuditCache() (err os.Error) {
+	// gather entries where the cache does not match the server
+	var deathrow []*File
+	for _, elt := range p.Catalog {
+		if elt.CacheInfo != nil &&
+			(elt.ServerHashHex == "" ||
+				elt.ServerHashHex != elt.CacheHashHex ||
+				elt.ServerSize != elt.CacheInfo.Size) {
+			deathrow = append(deathrow, elt)
+		}
+	}
+	if len(deathrow) == 0 {
+		return
+	}
+
+	// wrap all the deletes in a single transaction
+	if err = p.Db.Exec("BEGIN TRANSACTION"); err != nil {
+		return
+	}
+	for _, elt := range deathrow {
+		if err = p.Db.Exec("DELETE FROM cache WHERE path = ?", elt.ServerPath); err != nil {
+			return
+		}
+		p.Catalog[elt.ServerPath] = nil, false
+	}
+	if err = p.Db.Exec("COMMIT"); err != nil {
+		return
+	}
+
 	return
 }

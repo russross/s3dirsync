@@ -111,9 +111,9 @@ func (p *Propolis) StatRequest(elt *File) (err os.Error) {
 		}
 		return
 	}
-	elt.ServerInfo = new(os.FileInfo)
-	elt.ServerInfo.Name = elt.ServerPath
-	p.GetResponseMetaData(resp, elt.ServerInfo)
+	elt.CacheInfo = new(os.FileInfo)
+	elt.CacheInfo.Name = elt.ServerPath
+	p.GetResponseMetaData(resp, elt.CacheInfo)
 	etag := resp.Header.Get("Etag")
 	elt.ServerHashHex = etag[1 : len(etag)-1]
 	return

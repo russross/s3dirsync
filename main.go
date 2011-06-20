@@ -58,17 +58,22 @@ type Propolis struct {
 	Reset       bool // reset the cache before starting
 	Directories bool // track directories on s3 with zero-length files
 	Practice    bool // do not actually make any changes
+	Watch       bool // watch the file system for changes after the initial scan
+	Delay       int  // number of seconds to wait before syncing a file
+	Concurrent  int  // max number of concurrent server requests
 
 	MimeTypes map[string]string // file extensions -> MIME type
 
 	Db Cache // cache database connection
 
-	Catalog    map[string]*ServerFileInfo
-	ByContents map[string]*ServerFileInfo
+	Queue      chan *File       // request queue
+	Catalog    map[string]*File // file info as found by a refresh scan
+	ByContents map[string]*File // md5 hash -> file found by a refresh scan
 }
 
 func Setup() (p *Propolis, push bool) {
 	var refresh, watch, delete, paranoid, reset, practice, public, secure, directories bool
+	var delay, concurrent int
 	flag.BoolVar(&refresh, "refresh", true,
 		"Scan online bucket to update cache at startup\n"+
 			"\tLonger startup time, but catches changes made while offline")
@@ -94,6 +99,12 @@ func Setup() (p *Propolis, push bool) {
 	flag.BoolVar(&directories, "directories", false,
 		"Track directories using special zero-length files\n"+
 			"\tMostly useful for greater compatibility with s3fslite")
+	flag.IntVar(&delay, "delay", 5,
+		"Wait this number of seconds from the last change to a file\n"+
+			"\tbefore syncing it with the server")
+	flag.IntVar(&concurrent, "concurrent", 10,
+		"Maximum number of server transactions that are\n"+
+			"allowed to run concurrently")
 
 	var accesskeyid, secretaccesskey, cache_location string
 	flag.StringVar(&accesskeyid, "accesskeyid", "",
@@ -211,6 +222,9 @@ func Setup() (p *Propolis, push bool) {
 		Reset:       reset,
 		Directories: directories,
 		Practice:    practice,
+		Watch:       watch,
+		Delay:       delay,
+		Concurrent:  concurrent,
 
 		MimeTypes: ReadMimeTypes(),
 
@@ -258,7 +272,9 @@ func main() {
 		}
 	}
 
+	// scan the server for a catalog of files
 	if p.Refresh {
+		fmt.Println("Scanning server...")
 		catalog, bycontents, err := p.ScanServer(push)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "Error in refresh scan:", err)
@@ -266,33 +282,39 @@ func main() {
 		}
 		p.Catalog = catalog
 		p.ByContents = bycontents
+	} else {
+		p.Catalog = make(map[string]*File)
 	}
 
-	//	fmt.Println("Issuing a list request")
-	//	finished := false
-	//	marker := ""
-	//    var err os.Error
-	//	for !finished {
-	//		var list *ListBucketResult
-	//		if list, err = p.ListRequest("/", marker, 100, true); err != nil {
-	//			fmt.Fprintln(os.Stderr, err)
-	//			os.Exit(-1)
-	//		}
-	//		dumpList(list)
-	//		finished = !list.IsTruncated
-	//		if len(list.Contents) > 0 {
-	//			marker = list.Contents[len(list.Contents)-1].Key
-	//		}
-	//	}
-	//
-	_, end := StartQueue(p, 10, 25)
-	//
-	//	if len(os.Args) != 2 {
-	//		fmt.Fprintf(os.Stderr, "Usage: %s <rootdir>\n", os.Args[0])
-	//		os.Exit(-1)
-	//	}
-	//	scan(q, os.Args[1])
-	//	//prompt(q)
+	// scan the cache and merge its data with the scanned results
+	fmt.Println("Scanning cache...")
+	if err := p.ScanCache(push); err != nil {
+		fmt.Fprintln(os.Stderr, "Error in cache scan:", err)
+		os.Exit(-1)
+	}
+
+	// dump cache entries that are out-of-date
+	// this removes entries from the catalog as they are processed
+	if p.Refresh {
+		fmt.Println("Deleting out-of-date cache entries...")
+		if err := p.AuditCache(); err != nil {
+			fmt.Fprintln(os.Stderr, "Error in cache audit:", err)
+			os.Exit(-1)
+		}
+	}
+
+	q, end := p.StartQueue()
+	p.Queue = q
+
+	// do initial file system scan, syncing as we go
+	// this removes entries from the catalog as they are processed
+	if p.Watch {
+		panic("Not implemented yet")
+	} else {
+		scan(p, p.LocalRoot)
+	}
+
+	// sync entries found on server but not in local file system
 
 	fmt.Println("Waiting for queue to empty...")
 	done := make(chan bool)
@@ -379,45 +401,36 @@ func parseLocalDir(arg string) string {
 	return path
 }
 
-func dumpList(list *ListBucketResult) {
-	fmt.Println()
-	fmt.Printf("%15s: %v\n", "Name", list.Name)
-	fmt.Printf("%15s: %#v\n", "Prefix", list.Prefix)
-	fmt.Printf("%15s: %#v\n", "Marker", list.Marker)
-	fmt.Printf("%15s: %#v\n", "NextMarker", list.NextMarker)
-	fmt.Printf("%15s: %v\n", "MaxKeys", list.MaxKeys)
-	fmt.Printf("%15s: %v\n", "IsTruncated", list.IsTruncated)
-	for _, elt := range list.Contents {
-		fmt.Printf("%-80s %s %d\n", elt.Key, elt.ETag, elt.Size)
-	}
-}
-
-type Walker chan FileName
-
-func (q Walker) VisitDir(path string, f *os.FileInfo) bool {
+func (p *Propolis) VisitDir(path string, f *os.FileInfo) bool {
 	//q<-FileName{path, true}
 	//fmt.Println("Dir :", path)
 	return true
 }
 
-func (q Walker) VisitFile(path string, f *os.FileInfo) {
+func (p *Propolis) VisitFile(path string, f *os.FileInfo) {
 	fmt.Println("File:", path)
-	q <- FileName{path, true, true}
-}
-
-func scan(q chan FileName, root string) {
-	filepath.Walk(root, Walker(q), nil)
-}
-
-func prompt(q chan FileName) {
-	fmt.Println("Type file names to be synced.  A blank line quits")
-	for {
-		var path string
-		if n, err := fmt.Scanln(&path); n != 1 || err != nil {
-			break
-		}
-		q <- FileName{path, false, true}
+	root := p.LocalRoot
+	if root != "/" {
+		root += "/"
 	}
+	if !strings.HasPrefix(path, root) {
+		panic("VisitFile: Invalid prefix [" + path + "]")
+	}
+	name := path[len(root):]
+	var elt *File
+	var present bool
+
+	if elt, present = p.Catalog[name]; !present {
+		// TODO: push?
+		elt = p.NewFile(name, true, true)
+	}
+
+	elt.LocalInfo = f
+	p.Queue <- elt
+}
+
+func scan(p *Propolis, root string) {
+	filepath.Walk(root, p, nil)
 }
 
 func getKeys() (key, secret string) {

@@ -34,7 +34,7 @@ type Candidate struct {
 	Name     string
 	Inserted int64
 	Updated  int64
-	Push     bool
+	Data     *File
 }
 
 type Queue struct {
@@ -45,21 +45,15 @@ func (q *Queue) Less(i, j int) bool {
 	return q.At(i).(*Candidate).Inserted < q.At(j).(*Candidate).Inserted
 }
 
-type FileName struct {
-	Name      string
-	Immediate bool
-	Push      bool
-}
-
 // Start the main queue loop. The channel that is returned
 // accepts relative path names as input. It waits for at least
-// delay seconds from the last time that path came through
+// p.Delay seconds from the last time that path came through
 // the channel, then issues a FileUpdate action on it.
-// At most maxInFlight updates will be launched in parallel, which
+// At most p.Concurrent updates will be launched in parallel, which
 // may delay some requests beyond delay seconds.
-func StartQueue(p *Propolis, delay int, maxInFlight int) (check chan FileName, quit chan chan bool) {
+func (p *Propolis) StartQueue() (check chan *File, quit chan chan bool) {
 	// a path coming in on this channel should be checked after a delay
-	check = make(chan FileName)
+	check = make(chan *File)
 
 	// the main queue of files that are waiting to be updated
 	queue := new(Queue)
@@ -87,10 +81,8 @@ func StartQueue(p *Propolis, delay int, maxInFlight int) (check chan FileName, q
 	go func() {
 		for {
 			select {
-			case fn := <-check:
-				path := fn.Name
-				push := fn.Push
-				immediate := fn.Immediate
+			case data := <-check:
+				path := data.ServerPath
 				//fmt.Printf("Q: incoming request [%s]\n", path)
 
 				// record the incoming request
@@ -100,15 +92,15 @@ func StartQueue(p *Propolis, delay int, maxInFlight int) (check chan FileName, q
 				if elt, present := pendingCandidates[path]; present {
 					// touch an existing entry
 					elt.Updated = now
-					elt.Push = push
+					elt.Data = data
 					//fmt.Printf("Q: pending candidate touched [%s]\n", path)
 				} else {
 					// new entry
-					elt := &Candidate{path, now, now, push}
-					if immediate {
+					elt := &Candidate{path, now, now, data}
+					if data.Immediate {
 						// move this request back in time
-						elt.Inserted -= int64(delay) * 1e9
-						elt.Updated -= int64(delay) * 1e9
+						elt.Inserted -= int64(p.Delay) * 1e9
+						elt.Updated -= int64(p.Delay) * 1e9
 					}
 
 					// put it in the queue
@@ -137,28 +129,28 @@ func StartQueue(p *Propolis, delay int, maxInFlight int) (check chan FileName, q
 					}
 
 					// has the delay been long enough?
-					if now-elt.Inserted < int64(delay)*1e9 && shutdown == nil {
+					if now-elt.Inserted < int64(p.Delay)*1e9 && shutdown == nil {
 						heap.Push(queue, elt)
 						//fmt.Printf("Q: oldest entry not old enough [%s]\n", elt.Name)
 						break
 					}
 
 					// is there room for an update right now?
-					if inflight < maxInFlight {
+					if inflight < p.Concurrent {
 						inflight++
 						pendingCandidates[elt.Name] = nil, false
 						//fmt.Printf("Q: starting update [%s]\n", elt.Name)
-						go func(path string, push bool) {
+						go func(path string, data *File) {
 							// perform the actual update
-							err := p.SyncFile(p.NewFile(path, push))
+							err := p.SyncFile(data)
 							if err != nil {
-								fmt.Fprintf(os.Stderr, "Error updating [%s]: %v\n", path, err)
+								fmt.Fprintf(os.Stderr, "Error updating [%s]: %v\n", data.ServerPath, err)
 							}
 
 							// signal that this update is finished
 							// so another can begin
 							finished <- true
-						}(elt.Name, elt.Push)
+						}(elt.Name, elt.Data)
 					} else {
 						heap.Push(queue, elt)
 						//fmt.Printf("Q: too many updates in flight [%s]\n", elt.Name)
@@ -184,11 +176,11 @@ func StartQueue(p *Propolis, delay int, maxInFlight int) (check chan FileName, q
 			}
 
 			// launch a sleeper if necessary
-			if !waiting && inflight < maxInFlight && queue.Len() > 0 {
+			if !waiting && inflight < p.Concurrent && queue.Len() > 0 {
 				now := time.Nanoseconds()
 				waiting = true
 				headofqueue := queue.At(0).(*Candidate).Inserted
-				howlong := headofqueue + int64(delay)*1e9 - now
+				howlong := headofqueue + int64(p.Delay)*1e9 - now
 				//fmt.Printf("Q: launching sleeper for %.2f seconds\n", float64(howlong)/1e9)
 				go func(pause int64) {
 					if pause > 0 && shutdown == nil {

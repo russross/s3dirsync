@@ -37,26 +37,28 @@ import (
 )
 
 type File struct {
-	LocalPath      string
-	ServerPath     string
-	FullServerPath string
-	UrlPath        string
-	Push           bool
+	LocalPath      string // full path on the local file system
+	ServerPath     string // full path on the server
+	FullServerPath string // full path on the server including bucket prefix
+	UrlPath        string // url to access this item
 
-	LocalInfo     *os.FileInfo // metadata found locally
-	ServerInfo    *os.FileInfo // metadata found in cache
-	ServerPartial bool         // cached metadata is incomplete
+	Push      bool // should local state override server state?
+	Immediate bool // should changes bypass the normal delay?
 
-	LocalHashHex    string // md5 hash of local file in hex
-	LocalHashBase64 string // md5 hash of local file in base64
-	ServerHashHex   string // md5 hash of remote file in hex
+	LocalInfo       *os.FileInfo // metadata found locally
+	LocalHashHex    string       // md5 hash of local file in hex
+	LocalHashBase64 string       // md5 hash of local file in base64
+	CacheInfo       *os.FileInfo // metadata found in cache
+	CacheHashHex    string       // cached md5 hash of remote file in hex
+	ServerHashHex   string       // md5 hash of remote file in hex
+	ServerSize      int64        // size as reported by a server scan
 
 	Contents io.ReadCloser
 }
 
 const empty_file_md5_hash = "d41d8cd98f00b204e9800998ecf8427e"
 
-func (p *Propolis) NewFile(pathname string, push bool) (elt *File) {
+func (p *Propolis) NewFile(pathname string, push bool, immediate bool) (elt *File) {
 	// form all the different file name variations we need
 	elt = new(File)
 	elt.LocalPath = filepath.Join(p.LocalRoot, pathname)
@@ -64,13 +66,28 @@ func (p *Propolis) NewFile(pathname string, push bool) (elt *File) {
 	elt.FullServerPath = path.Join("/", p.Bucket, elt.ServerPath)
 	elt.UrlPath = p.Url + "/" + elt.ServerPath
 	elt.Push = push
+	elt.Immediate = immediate
 	return
 }
 
+func (p *Propolis) NewFileServer(servername string, push bool) (elt *File) {
+	root := p.BucketRoot
+	if root != "" {
+		root += "/"
+	}
+	if strings.HasPrefix(servername, root) {
+		return p.NewFile(servername[len(root):], push, true)
+	}
+	panic("NewFileServer: path with incorrect prefix [" + servername + "]")
+}
+
+// Sync a single file between the local file system and the server.
 func (p *Propolis) SyncFile(elt *File) (err os.Error) {
 	// see what is in the local file system
 	var er os.Error
-	elt.LocalInfo, er = os.Lstat(elt.LocalPath)
+	if elt.LocalInfo == nil {
+		elt.LocalInfo, er = os.Lstat(elt.LocalPath)
+	}
 	if er != nil {
 		elt.LocalInfo = nil
 	} else {
@@ -83,7 +100,7 @@ func (p *Propolis) SyncFile(elt *File) (err os.Error) {
 	}
 
 	// decide if anything needs updating
-	if elt.LocalInfo == nil && elt.ServerInfo == nil {
+	if elt.LocalInfo == nil && elt.CacheInfo == nil {
 		// nothing to do
 		fmt.Printf("No such file locally or on server [%s]\n", elt.ServerPath)
 		return
@@ -91,7 +108,7 @@ func (p *Propolis) SyncFile(elt *File) (err os.Error) {
 
 	if elt.Push {
 		switch {
-		case elt.LocalInfo == nil && elt.ServerInfo != nil:
+		case elt.LocalInfo == nil && elt.CacheInfo != nil:
 			// delete the remote file
 			fmt.Printf("Deleting remote file [%s]\n", elt.ServerPath)
 			if p.Practice {
@@ -109,12 +126,12 @@ func (p *Propolis) SyncFile(elt *File) (err os.Error) {
 				return
 			}
 
-		case (elt.LocalInfo != nil && elt.ServerInfo == nil ||
-			elt.LocalInfo.Mode != elt.ServerInfo.Mode ||
-			elt.LocalInfo.Uid != elt.ServerInfo.Uid ||
-			elt.LocalInfo.Gid != elt.ServerInfo.Gid ||
-			elt.LocalInfo.Size != elt.ServerInfo.Size ||
-			elt.LocalInfo.Mtime_ns != elt.ServerInfo.Mtime_ns):
+		case (elt.LocalInfo != nil && elt.CacheInfo == nil ||
+			elt.LocalInfo.Mode != elt.CacheInfo.Mode ||
+			elt.LocalInfo.Uid != elt.CacheInfo.Uid ||
+			elt.LocalInfo.Gid != elt.CacheInfo.Gid ||
+			elt.LocalInfo.Size != elt.CacheInfo.Size ||
+			elt.LocalInfo.Mtime_ns != elt.CacheInfo.Mtime_ns):
 			// remote update needed
 
 			err = p.UploadFile(elt)
@@ -126,7 +143,7 @@ func (p *Propolis) SyncFile(elt *File) (err os.Error) {
 			}
 
 			// do they match?
-			if elt.LocalHashHex == elt.ServerHashHex {
+			if elt.LocalHashHex == elt.CacheHashHex {
 				fmt.Printf("No change [%s]\n", elt.ServerPath)
 				elt.Contents.Close()
 				return
@@ -140,7 +157,7 @@ func (p *Propolis) SyncFile(elt *File) (err os.Error) {
 	} else {
 		// this is a pull request
 		switch {
-		case elt.LocalInfo != nil && elt.ServerInfo == nil:
+		case elt.LocalInfo != nil && elt.CacheInfo == nil:
 			// delete the local file
 			fmt.Printf("Deleting local file [%s]\n", elt.ServerPath)
 			if p.Practice {
@@ -151,12 +168,12 @@ func (p *Propolis) SyncFile(elt *File) (err os.Error) {
 				return
 			}
 
-		case (elt.LocalInfo == nil && elt.ServerInfo != nil ||
-			elt.LocalInfo.Mode != elt.ServerInfo.Mode ||
-			elt.LocalInfo.Uid != elt.ServerInfo.Uid ||
-			elt.LocalInfo.Gid != elt.ServerInfo.Gid ||
-			elt.LocalInfo.Size != elt.ServerInfo.Size ||
-			elt.LocalInfo.Mtime_ns != elt.ServerInfo.Mtime_ns):
+		case (elt.LocalInfo == nil && elt.CacheInfo != nil ||
+			elt.LocalInfo.Mode != elt.CacheInfo.Mode ||
+			elt.LocalInfo.Uid != elt.CacheInfo.Uid ||
+			elt.LocalInfo.Gid != elt.CacheInfo.Gid ||
+			elt.LocalInfo.Size != elt.CacheInfo.Size ||
+			elt.LocalInfo.Mtime_ns != elt.CacheInfo.Mtime_ns):
 			// local update needed
 
 			err = p.DownloadFile(elt)
@@ -169,7 +186,7 @@ func (p *Propolis) SyncFile(elt *File) (err os.Error) {
 			elt.Contents.Close()
 
 			// do they match?
-			if elt.LocalHashHex == elt.ServerHashHex {
+			if elt.LocalHashHex == elt.CacheHashHex {
 				fmt.Printf("No change [%s]\n", elt.ServerPath)
 				return
 			}
@@ -186,38 +203,23 @@ func (p *Propolis) SyncFile(elt *File) (err os.Error) {
 }
 
 func (p *Propolis) LstatServer(elt *File) (err os.Error) {
-	// check the cache
-	if err = p.GetFileInfo(elt); err != nil {
-		return
+	// check the cache (if we don't already have the entry loaded)
+	if elt.CacheInfo == nil {
+		if err = p.GetFileInfo(elt); err != nil {
+			return
+		}
 	}
 
-	// does the cache entry appear to be up-to-date?
-	if !p.Refresh {
-		// we trust the cache, so accept whatever it gave us
-		return
-	}
-	if entry, present := p.Catalog[elt.ServerPath]; present {
-		// scan found an entry; does it match what the cache had?
-		if elt.ServerInfo == nil || elt.ServerHashHex != entry.HashHex || elt.ServerInfo.Size != entry.Size {
-			if err = p.StatRequest(elt); err != nil {
-				return
-			}
-			if elt.ServerInfo == nil {
-				fmt.Printf("Adding missing cache entry [%s]\n", elt.ServerPath)
-			} else {
-				fmt.Printf("Updating bogus cache entry [%s]\n", elt.ServerPath)
-			}
-			if err = p.SetFileInfo(elt, false); err != nil {
-				return
-			}
+	// should we issue a stat request to the server?
+	if elt.ServerHashHex != "" && elt.CacheInfo == nil {
+		if err = p.StatRequest(elt); err != nil {
+			return
 		}
-	} else {
-		// nothing on the server, so delete cache entry if it exists
-		if elt.ServerInfo != nil {
-			fmt.Printf("Removing bogus cache entry [%s]\n", elt.ServerPath)
-			if err = p.DeleteFileInfo(elt); err != nil {
-				return
-			}
+		if elt.CacheInfo == nil {
+			fmt.Printf("Adding missing cache entry [%s]\n", elt.ServerPath)
+		}
+		if err = p.SetFileInfo(elt, false); err != nil {
+			return
 		}
 	}
 	return
@@ -287,7 +289,7 @@ func (p *Propolis) GetMd5(elt *File) (err os.Error) {
 func (p *Propolis) UploadFile(elt *File) (err os.Error) {
 	// clear cache entry first: if something fails, the update
 	// will be repeated on restart
-	if elt.ServerInfo != nil {
+	if elt.CacheInfo != nil {
 		if err = p.DeleteFileInfo(elt); err != nil {
 			if elt.Contents != nil {
 				elt.Contents.Close()
@@ -303,7 +305,7 @@ func (p *Propolis) UploadFile(elt *File) (err os.Error) {
 		if elt.Contents != nil {
 			elt.Contents.Close()
 		}
-		if elt.ServerInfo != nil {
+		if elt.CacheInfo != nil {
 			// the current file must have replaced an old regular file
 			fmt.Printf("Deleting old file masked by untracked file [%s]\n", elt.ServerPath)
 			if p.Practice {
@@ -341,7 +343,7 @@ func (p *Propolis) UploadFile(elt *File) (err os.Error) {
 		// uploading an empty file is easy; don't bother with anything fancy
 		src = ""
 
-	case elt.LocalHashHex == elt.ServerHashHex:
+	case elt.LocalHashHex == elt.CacheHashHex:
 		// this is just a metadata update with no content change
 		src = elt.ServerPath
 
@@ -351,8 +353,8 @@ func (p *Propolis) UploadFile(elt *File) (err os.Error) {
 
 		// try the scan results first
 		if p.Refresh && p.ByContents != nil {
-			if entry, present := p.ByContents[elt.LocalHashHex]; present && entry.Size == elt.LocalInfo.Size {
-				src = entry.Name
+			if entry, present := p.ByContents[elt.LocalHashHex]; present && entry.ServerSize == elt.LocalInfo.Size {
+				src = entry.ServerPath
 			}
 		}
 
@@ -417,16 +419,10 @@ func (p *Propolis) DownloadFile(elt *File) (err os.Error) {
 	return
 }
 
-type ServerFileInfo struct {
-	Name    string
-	HashHex string
-	Size    int64
-}
-
-func (p *Propolis) ScanServer(push bool) (catalog map[string]*ServerFileInfo, bycontents map[string]*ServerFileInfo, err os.Error) {
+func (p *Propolis) ScanServer(push bool) (catalog map[string]*File, bycontents map[string]*File, err os.Error) {
 	// scan the entire server directory
-	catalog = make(map[string]*ServerFileInfo)
-	bycontents = make(map[string]*ServerFileInfo)
+	catalog = make(map[string]*File)
+	bycontents = make(map[string]*File)
 
 	marker := ""
 	truncated := true
@@ -447,7 +443,6 @@ func (p *Propolis) ScanServer(push bool) (catalog map[string]*ServerFileInfo, by
 			return
 		}
 
-		fmt.Printf("List [%s] with %d results\n", p.BucketRoot, len(listresult.Contents))
 		truncated = listresult.IsTruncated
 		if len(listresult.Contents) > 0 {
 			marker = listresult.Contents[len(listresult.Contents)-1].Key
@@ -464,7 +459,9 @@ func (p *Propolis) ScanServer(push bool) (catalog map[string]*ServerFileInfo, by
 			hash := elt.ETag[1 : len(elt.ETag)-1]
 			size := elt.Size
 
-			info := &ServerFileInfo{path, hash, size}
+			info := p.NewFileServer(path, push)
+			info.ServerHashHex = hash
+			info.ServerSize = size
 			catalog[path] = info
 
 			// track all non-empty files by content hash
