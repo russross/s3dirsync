@@ -23,9 +23,9 @@
 package main
 
 import (
-	"fmt"
 	"gosqlite.googlecode.com/hg/sqlite"
 	"os"
+	"strings"
 )
 
 type Cache struct {
@@ -150,13 +150,28 @@ func (p *Propolis) ResetCache() (err os.Error) {
 func (p *Propolis) ScanCache(push bool) (err os.Error) {
 	// scan the entire cache
 	var stmt *sqlite.Stmt
-	stmt, err = p.Db.Prepare("SELECT * FROM cache")
+	prefix := p.BucketRoot
+	if prefix != "" {
+		prefix = strings.Replace(prefix, "\\", "\\\\", -1)
+		prefix = strings.Replace(prefix, "_", "\\_", -1)
+		prefix = strings.Replace(prefix, "%", "\\%", -1)
+		prefix += "/%"
+		stmt, err = p.Db.Prepare("SELECT * FROM cache WHERE path LIKE ? ESCAPE '\\'")
+	} else {
+		stmt, err = p.Db.Prepare("SELECT * FROM cache")
+	}
 	if err != nil {
 		return
 	}
 	defer stmt.Finalize()
-	if err = stmt.Exec(); err != nil {
-		return
+	if prefix != "" {
+		if err = stmt.Exec(prefix); err != nil {
+			return
+		}
+	} else {
+		if err = stmt.Exec(); err != nil {
+			return
+		}
 	}
 
 	// read the results
@@ -212,7 +227,6 @@ func (p *Propolis) AuditCache() (err os.Error) {
 		return
 	}
 	for _, elt := range deathrow {
-		fmt.Println("AuditCache: deleting", elt.ServerPath)
 		if err = p.Db.Exec("DELETE FROM cache WHERE path = ?", elt.ServerPath); err != nil {
 			return
 		}

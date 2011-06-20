@@ -38,7 +38,7 @@ const (
 	s3_access_key_id_variable     = "AWSACCESSKEYID"
 	s3_secret_access_key_variable = "AWSSECRETACCESSKEY"
 	mime_types_file               = "/etc/mime.types"
-	default_cache_location        = "/var/cache/propolis/cache.sqlite"
+	default_cache_location        = "/var/cache/propolis"
 	list_request_size             = 256
 )
 
@@ -77,7 +77,7 @@ func Setup() (p *Propolis, push bool) {
 	flag.BoolVar(&refresh, "refresh", true,
 		"Scan online bucket to update cache at startup\n"+
 			"\tLonger startup time, but catches changes made while offline")
-	flag.BoolVar(&watch, "watch", true,
+	flag.BoolVar(&watch, "watch", false,
 		"Go into daemon mode and watch the local file system\n"+
 			"\tfor changes after initial sync (false means sync then quit)")
 	flag.BoolVar(&delete, "delete", true,
@@ -104,7 +104,7 @@ func Setup() (p *Propolis, push bool) {
 			"\tbefore syncing it with the server")
 	flag.IntVar(&concurrent, "concurrent", 10,
 		"Maximum number of server transactions that are\n"+
-			"allowed to run concurrently")
+			"\tallowed to run concurrently")
 
 	var accesskeyid, secretaccesskey, cache_location string
 	flag.StringVar(&accesskeyid, "accesskeyid", "",
@@ -195,7 +195,7 @@ func Setup() (p *Propolis, push bool) {
 	// open the database
 	var err os.Error
 	var cache Cache
-	if cache, err = Connect(cache_location); err != nil {
+	if cache, err = Connect(path.Join(cache_location, bucketname+".sqlite")); err != nil {
 		fmt.Println("Error connecting to database:", err)
 		os.Exit(-1)
 	}
