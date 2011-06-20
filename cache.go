@@ -23,6 +23,7 @@
 package main
 
 import (
+	"fmt"
 	"gosqlite.googlecode.com/hg/sqlite"
 	"os"
 )
@@ -211,6 +212,7 @@ func (p *Propolis) AuditCache() (err os.Error) {
 		return
 	}
 	for _, elt := range deathrow {
+		fmt.Println("AuditCache: deleting", elt.ServerPath)
 		if err = p.Db.Exec("DELETE FROM cache WHERE path = ?", elt.ServerPath); err != nil {
 			return
 		}

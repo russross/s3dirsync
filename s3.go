@@ -116,6 +116,7 @@ func (p *Propolis) StatRequest(elt *File) (err os.Error) {
 	p.GetResponseMetaData(resp, elt.CacheInfo)
 	etag := resp.Header.Get("Etag")
 	elt.ServerHashHex = etag[1 : len(etag)-1]
+	elt.CacheHashHex = elt.ServerHashHex
 	return
 }
 

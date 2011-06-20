@@ -87,10 +87,11 @@ func (p *Propolis) SyncFile(elt *File) (err os.Error) {
 	var er os.Error
 	if elt.LocalInfo == nil {
 		elt.LocalInfo, er = os.Lstat(elt.LocalPath)
+		if er != nil {
+			elt.LocalInfo = nil
+		}
 	}
-	if er != nil {
-		elt.LocalInfo = nil
-	} else {
+	if elt.LocalInfo != nil {
 		elt.LocalInfo.Name = elt.ServerPath
 	}
 
@@ -215,11 +216,13 @@ func (p *Propolis) LstatServer(elt *File) (err os.Error) {
 		if err = p.StatRequest(elt); err != nil {
 			return
 		}
-		if elt.CacheInfo == nil {
-			fmt.Printf("Adding missing cache entry [%s]\n", elt.ServerPath)
-		}
-		if err = p.SetFileInfo(elt, false); err != nil {
-			return
+
+		// if we got a hit on the server, update the cache
+		if elt.CacheInfo != nil {
+			//fmt.Printf("Adding missing cache entry [%s]\n", elt.ServerPath)
+			if err = p.SetFileInfo(elt, false); err != nil {
+				return
+			}
 		}
 	}
 	return
@@ -299,9 +302,10 @@ func (p *Propolis) UploadFile(elt *File) (err os.Error) {
 	}
 
 	// is this a kind of file we don't track?
-	if !elt.LocalInfo.IsRegular() &&
-		!elt.LocalInfo.IsSymlink() &&
-		(!p.Directories || !elt.LocalInfo.IsDirectory()) {
+	if elt.ServerPath == "" ||
+		(!elt.LocalInfo.IsRegular() &&
+			!elt.LocalInfo.IsSymlink() &&
+			(!p.Directories || !elt.LocalInfo.IsDirectory())) {
 		if elt.Contents != nil {
 			elt.Contents.Close()
 		}
@@ -387,6 +391,7 @@ func (p *Propolis) UploadFile(elt *File) (err os.Error) {
 		if err = p.SetFileInfo(elt, true); err != nil {
 			return
 		}
+		return
 	}
 
 	// upload the file

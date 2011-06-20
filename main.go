@@ -308,6 +308,7 @@ func main() {
 
 	// do initial file system scan, syncing as we go
 	// this removes entries from the catalog as they are processed
+	fmt.Println("Scanning file system...")
 	if p.Watch {
 		panic("Not implemented yet")
 	} else {
@@ -315,6 +316,11 @@ func main() {
 	}
 
 	// sync entries found on server but not in local file system
+	fmt.Println("Syncing files found on server but not locally...")
+	for _, elt := range p.Catalog {
+		p.Queue <- elt
+	}
+	p.Catalog = nil
 
 	fmt.Println("Waiting for queue to empty...")
 	done := make(chan bool)
@@ -407,22 +413,27 @@ func (p *Propolis) VisitDir(path string, f *os.FileInfo) bool {
 	return true
 }
 
-func (p *Propolis) VisitFile(path string, f *os.FileInfo) {
-	fmt.Println("File:", path)
+func (p *Propolis) VisitFile(filepath string, f *os.FileInfo) {
 	root := p.LocalRoot
 	if root != "/" {
 		root += "/"
 	}
-	if !strings.HasPrefix(path, root) {
-		panic("VisitFile: Invalid prefix [" + path + "]")
+	if !strings.HasPrefix(filepath, root) {
+		panic("VisitFile: Invalid prefix [" + filepath + "]")
 	}
-	name := path[len(root):]
+	name := filepath[len(root):]
+	serverpath := path.Join(p.BucketRoot, name)
 	var elt *File
 	var present bool
 
-	if elt, present = p.Catalog[name]; !present {
-		// TODO: push?
-		elt = p.NewFile(name, true, true)
+	if elt, present = p.Catalog[serverpath]; present {
+		// delete it from the catalog once we've processed it
+		// note: do this now, now when the file is actually synced
+		p.Catalog[serverpath] = nil, false
+	} else {
+		// TODO: how to know if this is a push?
+		push := true
+		elt = p.NewFile(name, push, true)
 	}
 
 	elt.LocalInfo = f
