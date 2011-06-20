@@ -102,7 +102,7 @@ func Setup() (p *Propolis, push bool) {
 	flag.IntVar(&delay, "delay", 5,
 		"Wait this number of seconds from the last change to a file\n"+
 			"\tbefore syncing it with the server")
-	flag.IntVar(&concurrent, "concurrent", 10,
+	flag.IntVar(&concurrent, "concurrent", 25,
 		"Maximum number of server transactions that are\n"+
 			"\tallowed to run concurrently")
 

@@ -130,6 +130,7 @@ func (p *Propolis) SetStatRequest(elt *File) (err os.Error) {
 	return
 }
 
+// TODO:
 func (p *Propolis) DownloadRequest(path string, body io.WriteCloser) (info *os.FileInfo, err os.Error) {
 	var resp *http.Response
 	if resp, err = p.SendRequest("GET", "", path, nil, "", nil); err != nil {
@@ -408,7 +409,7 @@ func (p *Propolis) SendRequest(method string, src, target string, body io.ReadCl
 	// is this a copy/metadata update?
 	if src != "" {
 		// note: src should already be a full bucket + path name
-		req.Header.Set("X-Amz-Copy-Source", urlEncode(src))
+		req.Header.Set("X-Amz-Copy-Source", urlPathEncode(src))
 		req.Header.Set("X-Amz-Metadata-Directive", "REPLACE")
 	}
 
@@ -512,4 +513,8 @@ func (p *Propolis) SignRequest(req *http.Request) {
 
 func urlEncode(path string) string {
 	return strings.Replace(http.URLEscape(path), "%2F", "/", -1)
+}
+
+func urlPathEncode(path string) string {
+	return urlEncode(strings.Replace(path, " ", "%20", -1))
 }

@@ -64,7 +64,7 @@ func (p *Propolis) NewFile(pathname string, push bool, immediate bool) (elt *Fil
 	elt.LocalPath = filepath.Join(p.LocalRoot, pathname)
 	elt.ServerPath = path.Join(p.BucketRoot, pathname)
 	elt.FullServerPath = path.Join("/", p.Bucket, elt.ServerPath)
-	elt.UrlPath = p.Url + "/" + elt.ServerPath
+	elt.UrlPath = p.Url + "/" + urlPathEncode(elt.ServerPath)
 	elt.Push = push
 	elt.Immediate = immediate
 	return
