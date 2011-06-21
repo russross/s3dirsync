@@ -255,6 +255,9 @@ func (p *Propolis) GetMd5(elt *File) (err os.Error) {
 		var buffer bytes.Buffer
 		elt.Contents = ioutil.NopCloser(&buffer)
 
+		// treat directories as empty files
+		elt.LocalInfo.Size = 0
+
 	default:
 		// regular file
 		var fp *os.File
@@ -323,7 +326,7 @@ func (p *Propolis) UploadFile(elt *File) (err os.Error) {
 				return
 			}
 		} else {
-			fmt.Printf("Ignoring untracked file [%s]\n", elt.ServerPath)
+			//fmt.Printf("Ignoring untracked file [%s]\n", elt.ServerPath)
 		}
 
 		return

@@ -326,7 +326,7 @@ func main() {
 	done := make(chan bool)
 	end <- done
 	<-done
-	fmt.Println("Quitting")
+	fmt.Println("Finished.")
 }
 
 func parseBucket(arg string) (name, prefix string) {
@@ -410,6 +410,7 @@ func parseLocalDir(arg string) string {
 func (p *Propolis) VisitDir(path string, f *os.FileInfo) bool {
 	//q<-FileName{path, true}
 	//fmt.Println("Dir :", path)
+	p.VisitFile(path+"/", f)
 	return true
 }
 
