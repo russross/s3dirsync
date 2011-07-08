@@ -464,7 +464,7 @@ func (p *Propolis) SignAndExecute(req *http.Request, specialcase bool) (resp *ht
 
 	// now read the response
 	reader := bufio.NewReader(conn)
-	resp, err = http.ReadResponse(reader, req.Method)
+	resp, err = http.ReadResponse(reader, req)
 	if err != nil {
 		return nil, err
 	}
