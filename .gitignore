@@ -1,4 +1,5 @@
 *.8
+*.6
 *.out
 *.swp
 *.sqlite

@@ -62,8 +62,6 @@ type Propolis struct {
 	Delay       int  // number of seconds to wait before syncing a file
 	Concurrent  int  // max number of concurrent server requests
 
-	MimeTypes map[string]string // file extensions -> MIME type
-
 	Db Cache // cache database connection
 
 	Queue      chan *File       // request queue
@@ -226,36 +224,7 @@ func Setup() (p *Propolis, push bool) {
 		Delay:       delay,
 		Concurrent:  concurrent,
 
-		MimeTypes: ReadMimeTypes(),
-
 		Db: cache,
-	}
-	return
-}
-
-func ReadMimeTypes() (mimes map[string]string) {
-	// read in a list of MIME types if possible
-	mimes = make(map[string]string)
-	if fp, err := os.Open(mime_types_file); err == nil {
-		defer fp.Close()
-		read := bufio.NewReader(fp)
-		for line, isPrefix, err := read.ReadLine(); err == nil; line, isPrefix, err = read.ReadLine() {
-			s := strings.TrimSpace(string(line))
-			if isPrefix || len(s) < 3 || s[0] == '#' {
-				continue
-			}
-			s = strings.Replace(s, " ", "\t", -1)
-			chunks := strings.Split(s, "\t", -1)
-			if len(chunks) < 2 {
-				continue
-			}
-			kind := chunks[0]
-			for _, ext := range chunks[1:] {
-				if ext != "" {
-					mimes[ext] = kind
-				}
-			}
-		}
 	}
 	return
 }
@@ -461,7 +430,7 @@ func getKeys() (key, secret string) {
 			if isPrefix || len(s) == 0 || s[0] == '#' {
 				continue
 			}
-			chunks := strings.Split(s, ":", 2)
+			chunks := strings.SplitN(s, ":", 2)
 			if len(chunks) != 2 {
 				continue
 			}

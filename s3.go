@@ -32,12 +32,14 @@ import (
 	"fmt"
 	"http"
 	"io"
+	"mime"
 	"net"
 	"os"
 	"os/user"
 	"strconv"
 	"strings"
 	"time"
+	"url"
 	"xml"
 )
 
@@ -261,21 +263,21 @@ func (p *Propolis) SetRequestMetaData(req *http.Request, info *os.FileInfo) {
 	}
 
 	// set the content-type by looking up the MIME type
-	mime := default_mime_type
+	mimetype := default_mime_type
 	switch {
 	case info.IsDirectory():
-		mime = directory_mime_type
+		mimetype = directory_mime_type
 	case info.IsSymlink():
-		mime = symlink_mime_type
+		mimetype = symlink_mime_type
 	default:
 		if dot := strings.LastIndex(info.Name, "."); dot >= 0 && dot+1 < len(info.Name) {
-			extension := info.Name[dot+1:]
-			if kind, present := p.MimeTypes[extension]; present {
-				mime = kind
+			extension := strings.ToLower(info.Name[dot:])
+			if kind := mime.TypeByExtension(extension); kind != "" {
+				mimetype = kind
 			}
 		}
 	}
-	req.Header.Set("Content-Type", mime)
+	req.Header.Set("Content-Type", mimetype)
 }
 
 func (p *Propolis) GetResponseMetaData(resp *http.Response, info *os.FileInfo) {
@@ -512,7 +514,7 @@ func (p *Propolis) SignRequest(req *http.Request) {
 }
 
 func urlEncode(path string) string {
-	return strings.Replace(http.URLEscape(path), "%2F", "/", -1)
+	return strings.Replace(url.QueryEscape(path), "%2F", "/", -1)
 }
 
 func urlPathEncode(path string) string {
