@@ -45,11 +45,12 @@ const (
 
 // configuration and state for an active propolis instance
 type Propolis struct {
-	Bucket string   // bucket name
-	Url    *url.URL // s3 bucket access url
-	Secure bool     // use https
-	Key    string   // Amazon AWS access key
-	Secret string   // Amazon AWS secret key
+	Bucket            string   // bucket name
+	Url               *url.URL // s3 bucket access url
+	Secure            bool     // use https
+	ReducedRedundancy bool     // use cheaper storage
+	Key               string   // Amazon AWS access key
+	Secret            string   // Amazon AWS secret key
 
 	BucketRoot string // s3 bucket root directory
 	LocalRoot  string // local file system root directory
@@ -71,7 +72,7 @@ type Propolis struct {
 }
 
 func Setup() (p *Propolis, push bool) {
-	var refresh, watch, delete, paranoid, reset, practice, public, secure, directories bool
+	var refresh, watch, delete, paranoid, reset, practice, public, secure, reduced, directories bool
 	var delay, concurrent int
 	flag.BoolVar(&refresh, "refresh", true,
 		"Scan online bucket to update cache at startup\n"+
@@ -95,6 +96,9 @@ func Setup() (p *Propolis, push bool) {
 	flag.BoolVar(&secure, "secure", false,
 		"Use secure connections to Amazon S3\n"+
 			"\tA bit slower, but data is encrypted when being transferred")
+	flag.BoolVar(&reduced, "reduced", false,
+		"Use reduced redundancy storage when uploading\n"+
+			"\tCheaper, but higher chance of loosing data")
 	flag.BoolVar(&directories, "directories", false,
 		"Track directories using special zero-length files\n"+
 			"\tMostly useful for greater compatibility with s3fslite")
@@ -209,11 +213,12 @@ func Setup() (p *Propolis, push bool) {
 	url.Path = "/"
 
 	p = &Propolis{
-		Bucket: bucketname,
-		Url:    url,
-		Secure: secure,
-		Key:    accesskeyid,
-		Secret: secretaccesskey,
+		Bucket:            bucketname,
+		Url:               url,
+		Secure:            secure,
+		ReducedRedundancy: reduced,
+		Key:               accesskeyid,
+		Secret:            secretaccesskey,
 
 		BucketRoot: bucketprefix,
 		LocalRoot:  localdir,

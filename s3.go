@@ -73,6 +73,7 @@ var AWS_HEADERS []string = []string{
 	"X-Amz-Meta-Mtime",
 	"X-Amz-Meta-Uid",
 	"X-Amz-Metadata-Directive",
+	"X-Amz-Storage-Class",
 }
 
 // results from bucket list requests
@@ -94,18 +95,18 @@ type ListBucketResult struct {
 }
 
 func (p *Propolis) UploadRequest(elt *File) (err os.Error) {
-	_, err = p.SendRequest("PUT", "", elt.Url, elt.Contents, elt.LocalHashBase64, elt.LocalInfo)
+	_, err = p.SendRequest("PUT", p.ReducedRedundancy, "", elt.Url, elt.Contents, elt.LocalHashBase64, elt.LocalInfo)
 	return
 }
 
 func (p *Propolis) DeleteRequest(elt *File) (err os.Error) {
-	_, err = p.SendRequest("DELETE", "", elt.Url, nil, "", nil)
+	_, err = p.SendRequest("DELETE", false, "", elt.Url, nil, "", nil)
 	return
 }
 
 func (p *Propolis) StatRequest(elt *File) (err os.Error) {
 	var resp *http.Response
-	if resp, err = p.SendRequest("HEAD", "", elt.Url, nil, "", nil); err != nil {
+	if resp, err = p.SendRequest("HEAD", false, "", elt.Url, nil, "", nil); err != nil {
 		// we don't consider "not found" an error
 		if resp != nil && resp.StatusCode == 404 {
 			err = nil
@@ -122,19 +123,19 @@ func (p *Propolis) StatRequest(elt *File) (err os.Error) {
 }
 
 func (p *Propolis) CopyRequest(elt *File, src string) (err os.Error) {
-	_, err = p.SendRequest("PUT", src, elt.Url, nil, "", elt.LocalInfo)
+	_, err = p.SendRequest("PUT", p.ReducedRedundancy, src, elt.Url, nil, "", elt.LocalInfo)
 	return
 }
 
 func (p *Propolis) SetStatRequest(elt *File) (err os.Error) {
-	_, err = p.SendRequest("PUT", elt.FullServerPath, elt.Url, nil, "", elt.LocalInfo)
+	_, err = p.SendRequest("PUT", p.ReducedRedundancy, elt.FullServerPath, elt.Url, nil, "", elt.LocalInfo)
 	return
 }
 
 // TODO:
 func (p *Propolis) DownloadRequest(path string, body io.WriteCloser) (info *os.FileInfo, err os.Error) {
 	var resp *http.Response
-	if resp, err = p.SendRequest("GET", "", nil, nil, "", nil); err != nil {
+	if resp, err = p.SendRequest("GET", false, "", nil, nil, "", nil); err != nil {
 		return
 	}
 	info = new(os.FileInfo)
@@ -218,7 +219,7 @@ func (p *Propolis) ListRequest(path string, marker string, maxEntries int, inclu
 
 	// issue the request
 	var resp *http.Response
-	if resp, err = p.SendRequest("GET", "", u, nil, "", nil); err != nil {
+	if resp, err = p.SendRequest("GET", false, "", u, nil, "", nil); err != nil {
 		return
 	}
 	if resp.Body != nil {
@@ -382,7 +383,7 @@ func (p *Propolis) GetResponseMetaData(resp *http.Response, info *os.FileInfo) {
 	}
 }
 
-func (p *Propolis) SendRequest(method string, src string, target *url.URL, body io.ReadCloser, hash string, info *os.FileInfo) (resp *http.Response, err os.Error) {
+func (p *Propolis) SendRequest(method string, reduced bool, src string, target *url.URL, body io.ReadCloser, hash string, info *os.FileInfo) (resp *http.Response, err os.Error) {
 	defer func() {
 		// if anything goes wrong, close the body reader
 		// if it ends normally, this will be closed already and set to nil
@@ -405,6 +406,11 @@ func (p *Propolis) SendRequest(method string, src string, target *url.URL, body 
 
 	if info != nil {
 		p.SetRequestMetaData(req, info)
+	}
+
+	// reduced redundancy?
+	if reduced {
+		req.Header.Set("X-Amz-Storage-Class", "REDUCED_REDUNDANCY")
 	}
 
 	// are we uploading a file with a content hash?
