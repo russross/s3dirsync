@@ -94,19 +94,18 @@ type ListBucketResult struct {
 }
 
 func (p *Propolis) UploadRequest(elt *File) (err os.Error) {
-	_, err = p.SendRequest("PUT", "", elt.UrlPath, elt.Contents, elt.LocalHashBase64, elt.LocalInfo)
+	_, err = p.SendRequest("PUT", "", elt.Url, elt.Contents, elt.LocalHashBase64, elt.LocalInfo)
 	return
 }
 
-
 func (p *Propolis) DeleteRequest(elt *File) (err os.Error) {
-	_, err = p.SendRequest("DELETE", "", elt.UrlPath, nil, "", nil)
+	_, err = p.SendRequest("DELETE", "", elt.Url, nil, "", nil)
 	return
 }
 
 func (p *Propolis) StatRequest(elt *File) (err os.Error) {
 	var resp *http.Response
-	if resp, err = p.SendRequest("HEAD", "", elt.UrlPath, nil, "", nil); err != nil {
+	if resp, err = p.SendRequest("HEAD", "", elt.Url, nil, "", nil); err != nil {
 		// we don't consider "not found" an error
 		if resp != nil && resp.StatusCode == 404 {
 			err = nil
@@ -123,19 +122,19 @@ func (p *Propolis) StatRequest(elt *File) (err os.Error) {
 }
 
 func (p *Propolis) CopyRequest(elt *File, src string) (err os.Error) {
-	_, err = p.SendRequest("PUT", src, elt.UrlPath, nil, "", elt.LocalInfo)
+	_, err = p.SendRequest("PUT", src, elt.Url, nil, "", elt.LocalInfo)
 	return
 }
 
 func (p *Propolis) SetStatRequest(elt *File) (err os.Error) {
-	_, err = p.SendRequest("PUT", elt.FullServerPath, elt.UrlPath, nil, "", elt.LocalInfo)
+	_, err = p.SendRequest("PUT", elt.FullServerPath, elt.Url, nil, "", elt.LocalInfo)
 	return
 }
 
 // TODO:
 func (p *Propolis) DownloadRequest(path string, body io.WriteCloser) (info *os.FileInfo, err os.Error) {
 	var resp *http.Response
-	if resp, err = p.SendRequest("GET", "", path, nil, "", nil); err != nil {
+	if resp, err = p.SendRequest("GET", "", nil, nil, "", nil); err != nil {
 		return
 	}
 	info = new(os.FileInfo)
@@ -197,24 +196,29 @@ func (p *Propolis) ListRequest(path string, marker string, maxEntries int, inclu
 		prefix = path + "/"
 	}
 
-	query := p.Url + "/?prefix=" + urlEncode(prefix)
+	query := make(url.Values)
+	query.Add("prefix", prefix)
 
 	// are we scanning just a single directory or getting everything?
 	if !includeAll {
-		query += "&delimiter=/"
+		query.Add("delimiter", "/")
 	}
 
 	// are we continuing an earlier scan?
 	if marker != "" {
-		query += "&marker=" + urlEncode(marker)
+		query.Add("marker", marker)
 	}
 
 	// restrict the maximum number of entries returned
-	query += "&max-keys=" + strconv.Itoa(maxEntries)
+	query.Add("max-keys", strconv.Itoa(maxEntries))
+
+	u := new(url.URL)
+	*u = *p.Url
+	u.RawQuery = query.Encode()
 
 	// issue the request
 	var resp *http.Response
-	if resp, err = p.SendRequest("GET", "", query, nil, "", nil); err != nil {
+	if resp, err = p.SendRequest("GET", "", u, nil, "", nil); err != nil {
 		return
 	}
 	if resp.Body != nil {
@@ -378,7 +382,7 @@ func (p *Propolis) GetResponseMetaData(resp *http.Response, info *os.FileInfo) {
 	}
 }
 
-func (p *Propolis) SendRequest(method string, src, target string, body io.ReadCloser, hash string, info *os.FileInfo) (resp *http.Response, err os.Error) {
+func (p *Propolis) SendRequest(method string, src string, target *url.URL, body io.ReadCloser, hash string, info *os.FileInfo) (resp *http.Response, err os.Error) {
 	defer func() {
 		// if anything goes wrong, close the body reader
 		// if it ends normally, this will be closed already and set to nil
@@ -388,7 +392,7 @@ func (p *Propolis) SendRequest(method string, src, target string, body io.ReadCl
 	}()
 
 	var req *http.Request
-	if req, err = http.NewRequest(method, target, body); err != nil {
+	if req, err = http.NewRequest(method, target.String(), body); err != nil {
 		return
 	}
 
@@ -411,7 +415,9 @@ func (p *Propolis) SendRequest(method string, src, target string, body io.ReadCl
 	// is this a copy/metadata update?
 	if src != "" {
 		// note: src should already be a full bucket + path name
-		req.Header.Set("X-Amz-Copy-Source", urlPathEncode(src))
+		u := new(url.URL)
+		u.Path = src
+		req.Header.Set("X-Amz-Copy-Source", u.String())
 		req.Header.Set("X-Amz-Metadata-Directive", "REPLACE")
 	}
 
@@ -497,7 +503,9 @@ func (p *Propolis) SignRequest(req *http.Request) {
 	}
 
 	// resource: the path components should be URL-encoded, but not the slashes
-	msg += urlEncode("/" + p.Bucket + req.URL.Path)
+	u := new(url.URL)
+	u.Path = "/" + p.Bucket + req.URL.Path
+	msg += u.String()
 
 	// create the signature
 	hmac := hmac.NewSHA1([]byte(p.Secret))
@@ -511,12 +519,4 @@ func (p *Propolis) SignRequest(req *http.Request) {
 	signature := encoded.String()
 
 	req.Header.Set("Authorization", "AWS "+p.Key+":"+signature)
-}
-
-func urlEncode(path string) string {
-	return strings.Replace(url.QueryEscape(path), "%2F", "/", -1)
-}
-
-func urlPathEncode(path string) string {
-	return urlEncode(strings.Replace(path, " ", "%20", -1))
 }

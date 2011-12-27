@@ -34,13 +34,14 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"url"
 )
 
 type File struct {
-	LocalPath      string // full path on the local file system
-	ServerPath     string // full path on the server
-	FullServerPath string // full path on the server including bucket prefix
-	UrlPath        string // url to access this item
+	LocalPath      string   // full path on the local file system
+	ServerPath     string   // full path on the server
+	FullServerPath string   // full path on the server including bucket prefix
+	Url            *url.URL // url to access this item
 
 	Push      bool // should local state override server state?
 	Immediate bool // should changes bypass the normal delay?
@@ -64,7 +65,9 @@ func (p *Propolis) NewFile(pathname string, push bool, immediate bool) (elt *Fil
 	elt.LocalPath = filepath.Join(p.LocalRoot, pathname)
 	elt.ServerPath = path.Join(p.BucketRoot, pathname)
 	elt.FullServerPath = path.Join("/", p.Bucket, elt.ServerPath)
-	elt.UrlPath = p.Url + "/" + urlPathEncode(elt.ServerPath)
+	elt.Url = new(url.URL)
+	*elt.Url = *p.Url
+	elt.Url.Path = path.Join("/", elt.ServerPath)
 	elt.Push = push
 	elt.Immediate = immediate
 	return

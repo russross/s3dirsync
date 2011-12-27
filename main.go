@@ -31,6 +31,7 @@ import (
 	"path/filepath"
 	"strings"
 	"unicode"
+	"url"
 )
 
 const (
@@ -44,11 +45,11 @@ const (
 
 // configuration and state for an active propolis instance
 type Propolis struct {
-	Bucket string // bucket name
-	Url    string // s3 bucket access url
-	Secure bool   // use https
-	Key    string // Amazon AWS access key
-	Secret string // Amazon AWS secret key
+	Bucket string   // bucket name
+	Url    *url.URL // s3 bucket access url
+	Secure bool     // use https
+	Key    string   // Amazon AWS access key
+	Secret string   // Amazon AWS secret key
 
 	BucketRoot string // s3 bucket root directory
 	LocalRoot  string // local file system root directory
@@ -199,11 +200,13 @@ func Setup() (p *Propolis, push bool) {
 	}
 
 	// create the Propolis object
-	url := "http://"
+	url := new(url.URL)
+	url.Scheme = "http"
 	if secure {
-		url = "https://"
+		url.Scheme = "https"
 	}
-	url += bucketname + ".s3.amazonaws.com"
+	url.Host = bucketname + ".s3.amazonaws.com"
+	url.Path = "/"
 
 	p = &Propolis{
 		Bucket: bucketname,
