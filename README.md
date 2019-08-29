@@ -12,6 +12,4 @@ uses inotify to watch for local changes, and as such requires Linux.
 Status
 ======
 
-Early stages. There is not much point in trying this out yet, as it
-is an early work-in-progress. I mostly needed a git repository so
-that I could work on it from two locations.
+Dead. I never got very far on this and don't expect to ever continue development.
